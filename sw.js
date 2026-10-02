@@ -1,12 +1,12 @@
-const CACHE_NAME = 'maje-v1';
+const CACHE_NAME = 'maje-v2';
+
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.json',
-  './icons/icon-180.png',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  'https://cdn.tailwindcss.com'
+  './icon-180.png',
+  './icon-192.png',
+  './icon-512.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -33,16 +33,21 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-
-      return fetch(event.request).then((response) => {
+    fetch(event.request)
+      .then((response) => {
         if (response && response.status === 200) {
           const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, copy);
+          });
         }
+
         return response;
-      }).catch(() => caches.match('./index.html'));
-    })
+      })
+      .catch(() => {
+        return caches.match(event.request)
+          .then((cached) => cached || caches.match('./index.html'));
+      })
   );
 });
