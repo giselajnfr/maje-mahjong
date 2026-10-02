@@ -503,7 +503,7 @@ const I18N = {
     'Little Wind':'Angin Kecil', 'Great Wind':'Angin Besar', 'Seat Wind':'Angin Kursi',
     'Round Wind':'Angin Putaran', 'Seven Pairs':'Tujuh Pair', '13 Orphans':'13 Orphan',
     'Nine Gates':'Nine Gates', 'Four Kongs':'Empat Kong', 'Chicken Hand':'Chicken Hand',
-    'Last Tile':'Tile Terakhir', 'Concealed Hand':'Hand Tertutup'
+    'Last Tile':'Tile Terakhir', 'Robbing the Kong':'Merampas Kong', 'Concealed Hand':'Hand Tertutup'
   }
 };
 
@@ -808,7 +808,7 @@ function viewQuick(){
     </div>
     <label class="sans text-sm flex items-center gap-2 mb-1"><input type="checkbox" ${ctx.isLastTile?'checked':''} onchange="app.act('TOGGLE_LAST_TILE')"> Last Tile</label>
     ${concealedHandCheckboxHtml(ctx)}
-    ${kongBonusInfoHtml(S.draft)}
+    ${robbingKongCheckboxHtml(S.winCtx)}
     <div class="section-title">Seat Wind (optional)</div>
     <div class="grid grid-cols-4 gap-2 mb-2">${[['E',1],['S',2],['W',3],['N',4]].map(([w,n])=>`<button class="btn ${ctx.seatWind===w?'btn-primary':'btn-ghost'} sans !p-2 !min-h-[40px] text-xs" onclick="app.act('QSET','seatWind','${w}')">${w} (${n})</button>`).join('')}</div>
     <div class="section-title">Round Wind (optional)</div>
@@ -1115,7 +1115,7 @@ const app={
         const result=analyzeHand({
           concealedTiles:concealedForAnalysis, melds:finalMelds, declaredPair:S.draft.declaredPair, flowers:S.draft.flowers,
           roundWind:g.roundWind, seatWind:seatWindOf(g,winnerIdx), winMethod:S.winCtx.winMethod,
-            isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand:S.winCtx.isConcealedHand
+          isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='game'; S.view='result'; break; }
         if(result.needsChoice){ S.pendingChoice={mode:'game',additionalPoints:result.additionalPoints,options:result.options}; S.view='chooseInterpretation'; break; }
@@ -1128,7 +1128,7 @@ const app={
         const result=analyzeHand({
           concealedTiles:concealedForAnalysis, melds:finalMelds, declaredPair:S.draft.declaredPair, flowers:S.draft.flowers,
           roundWind:S.winCtx.roundWind||'E', seatWind:S.winCtx.seatWind||'E', winMethod:S.winCtx.winMethod,
-            isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand:S.winCtx.isConcealedHand
+          isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='quick'; S.view='result'; break; }
         if(result.needsChoice){ S.pendingChoice={mode:'quick',additionalPoints:result.additionalPoints,options:result.options}; S.view='chooseInterpretation'; break; }
