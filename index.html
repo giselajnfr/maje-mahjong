@@ -325,7 +325,7 @@ function scoreStandard(groups,pair,roundWind,seatWind){
 }
 
 function analyzeHand(input){
-  const {concealedTiles,melds,declaredPair,flowers,roundWind,seatWind,winMethod,isLastTile,isConcealedHand}=input;
+  const {concealedTiles,melds,declaredPair,flowers,roundWind,seatWind,winMethod,isLastTile,isRobbingKong,isConcealedHand}=input;
   const meldTiles=melds.flatMap(m=>m.tiles);
   const allTiles=[...concealedTiles,...meldTiles];
   let candidates=[];
@@ -361,8 +361,7 @@ function analyzeHand(input){
   if(winMethod==='SELF_DRAW') additional.push({name:'Self Draw',points:1,detail:'The winning tile came from the wall.'});
   if(isLastTile) additional.push({name:'Last Tile',points:1,detail:'Won on the final live-wall tile.'});
   if(winMethod==='DISCARD_WIN' && isConcealedHand) additional.push({name:'Concealed Hand',points:1,detail:'Marked as concealed — no exposed melds, and the win was on a discard.'});
-  const kongCount=melds.filter(m=>m.type==='KONG').length;
-  if(kongCount>0) additional.push({name:'Kong',points:kongCount,detail:`${kongCount} Kong meld${kongCount>1?'s':''} declared — each Kong adds +1 point.`});
+  if(isRobbingKong) additional.push({name:'Robbing the Kong',points:1,detail:'Won on the tile another player added to an exposed Pong to make a Kong.'});
   const suitable=flowers.filter(f=>FLOWER_SEAT[f]===seatWind);
   if(suitable.length>0) additional.push({name:'Suitable Flower',points:suitable.length,detail:`${suitable.length} flower/season tile(s) matched this seat.`});
   if(flowers.length===0) additional.push({name:'No Flower',points:1,detail:'The hand was completed without drawing any Flower/Season.'});
@@ -470,7 +469,7 @@ const I18N = {
     'Winds':'Angin', 'Dragons':'Naga', 'Flowers & Seasons':'Bunga & Musim',
     'Tiles entered:':'Tile dimasukkan:', 'Tap tiles below to add them.':'Ketuk tile di bawah untuk menambahkannya.',
     'All tiles are grouped — see Group Your Tiles below.':'Semua tile sudah dikelompokkan — lihat Kelompokkan Tile Anda di bawah.',
-    'Kong Bonus':'Bonus Kong', 'auto, +1 per Kong':'otomatis, +1 per Kong',
+    'Robbing the Kong':'Merampas Kong',
     'Additional Conditions':'Kondisi Tambahan', 'Last Tile':'Tile Terakhir',
     'Concealed Hand':'Hand Tertutup', 'Analyze Hand':'Analisis Hand',
     'Who Won?':'Siapa yang Menang?', 'Cancel':'Batal', 'Back':'Kembali',
@@ -743,14 +742,8 @@ function tilePickerHtml(draft,opts){
   `;
 }
 
-function kongBonusInfoHtml(draft){
-  const manualKongs=draft.groups.filter(g=>g.type==='KONG').length;
-  const autoKongs=autoDetectMelds(ungroupedTiles(draft)).melds.length;
-  const total=manualKongs+autoKongs;
-  return `<div class="card !p-3 mt-2 mb-2 flex justify-between items-center sans text-sm">
-    <span>Kong Bonus <span class="text-[#8a5a63] text-xs">(auto, +1 per Kong)</span></span>
-    <span class="font-semibold">${total>0?'+'+total:'—'}</span>
-  </div>`;
+function robbingKongCheckboxHtml(ctx){
+  return `<label class="sans text-sm flex items-center gap-2 mb-1"><input type="checkbox" ${ctx.isRobbingKong?'checked':''} onchange="app.act('TOGGLE_ROBBING_KONG')"> Robbing the Kong</label>`;
 }
 function concealedHandCheckboxHtml(ctx){
   const disabled=ctx.winMethod==='SELF_DRAW';
@@ -796,7 +789,7 @@ function viewRecordWin(){
     <div class="section-title mt-4">Additional Conditions</div>
     <label class="sans text-sm flex items-center gap-2 mb-1"><input type="checkbox" ${ctx.isLastTile?'checked':''} onchange="app.act('TOGGLE_LAST_TILE')"> Last Tile</label>
     ${concealedHandCheckboxHtml(ctx)}
-    ${kongBonusInfoHtml(S.draft)}
+    ${robbingKongCheckboxHtml(S.winCtx)}
     <button class="btn btn-primary sans mt-2" onclick="app.act('ANALYZE_GAME')">Analyze Hand</button>
   </div>`;
 }
@@ -1071,14 +1064,15 @@ const app={
       case 'OPEN_GAME': S.currentGameId=payload; S.view='game'; break;
       case 'GO_GAME': S.view='game'; break;
       case 'GO_HISTORY': S.view='history'; break;
-      case 'GO_RECORD_WIN': S.winCtx={winnerId:null,winMethod:null,discardedBy:null,isLastTile:false,isConcealedHand:false}; S.draft=newDraft(); S.view='recordWin'; break;
-      case 'GO_QUICK': S.winCtx={winMethod:null,discardedBy:null,seatWind:null,roundWind:null,isLastTile:false,isConcealedHand:false}; S.draft=newDraft(); S.view='quick'; break;
+      case 'GO_RECORD_WIN': S.winCtx={winnerId:null,winMethod:null,discardedBy:null,isLastTile:false,isRobbingKong:false,isConcealedHand:false}; S.draft=newDraft(); S.view='recordWin'; break;
+      case 'GO_QUICK': S.winCtx={winMethod:null,discardedBy:null,seatWind:null,roundWind:null,isLastTile:false,isRobbingKong:false,isConcealedHand:false}; S.draft=newDraft(); S.view='quick'; break;
       case 'PICK_WINNER': S.winCtx.winnerId=payload; break;
       case 'BACK_WINNER': S.winCtx.winnerId=null; break;
       case 'PICK_METHOD': S.winCtx.winMethod=payload; if(payload==='SELF_DRAW') S.winCtx.isConcealedHand=false; break;
       case 'BACK_METHOD': S.winCtx.winMethod=null; S.winCtx.discardedBy=null; break;
       case 'PICK_DISCARDER': S.winCtx.discardedBy=payload; break;
       case 'TOGGLE_LAST_TILE': S.winCtx.isLastTile=!S.winCtx.isLastTile; break;
+      case 'TOGGLE_ROBBING_KONG': S.winCtx.isRobbingKong=!S.winCtx.isRobbingKong; break;
       case 'TOGGLE_CONCEALED': if(S.winCtx.winMethod!=='SELF_DRAW') S.winCtx.isConcealedHand=!S.winCtx.isConcealedHand; break;
       case 'ADD_TILE': {
         if(countAllCopies(S.draft,payload)>=4){alert('Only 4 copies of a tile exist — you already have 4 of this one.');break;}
@@ -1121,7 +1115,7 @@ const app={
         const result=analyzeHand({
           concealedTiles:concealedForAnalysis, melds:finalMelds, declaredPair:S.draft.declaredPair, flowers:S.draft.flowers,
           roundWind:g.roundWind, seatWind:seatWindOf(g,winnerIdx), winMethod:S.winCtx.winMethod,
-          isLastTile:S.winCtx.isLastTile, isConcealedHand:S.winCtx.isConcealedHand
+            isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand:S.winCtx.isConcealedHand
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='game'; S.view='result'; break; }
         if(result.needsChoice){ S.pendingChoice={mode:'game',additionalPoints:result.additionalPoints,options:result.options}; S.view='chooseInterpretation'; break; }
@@ -1134,7 +1128,7 @@ const app={
         const result=analyzeHand({
           concealedTiles:concealedForAnalysis, melds:finalMelds, declaredPair:S.draft.declaredPair, flowers:S.draft.flowers,
           roundWind:S.winCtx.roundWind||'E', seatWind:S.winCtx.seatWind||'E', winMethod:S.winCtx.winMethod,
-          isLastTile:S.winCtx.isLastTile, isConcealedHand:S.winCtx.isConcealedHand
+            isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand:S.winCtx.isConcealedHand
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='quick'; S.view='result'; break; }
         if(result.needsChoice){ S.pendingChoice={mode:'quick',additionalPoints:result.additionalPoints,options:result.options}; S.view='chooseInterpretation'; break; }
@@ -1153,7 +1147,7 @@ const app={
         const hand={
           id:'h'+Date.now(), winnerId:S.winCtx.winnerId, tiles:S.draft.concealedTiles, exposedMelds:S.draft.groups,
           flowers:S.draft.flowers, winMethod:S.winCtx.winMethod, discardedBy:S.winCtx.discardedBy||null,
-          isLastTile:S.winCtx.isLastTile, roundWind:g.roundWind, winnerSeatWind:seatWindOf(g,winnerIdx),
+          isLastTile:S.winCtx.isLastTile, isRobbingKong:!!S.winCtx.isRobbingKong, roundWind:g.roundWind, winnerSeatWind:seatWindOf(g,winnerIdx),
           dealerPlayerId:currentDealer(g).id, scoringPatterns:S.lastResult.detectedPatterns.concat(S.lastResult.additionalPoints),
           totalPoints:S.lastResult.totalPoints, settlement:S.lastSettlement
         };
@@ -1169,9 +1163,9 @@ const app={
       }
       case 'VIEW_HAND': {
         const g=S.games.find(x=>x.id===payload.gid); const hd=g.hands[payload.idx];
-        const ADDITIONAL_NAMES=['Self Draw','Last Tile','Concealed Hand','Kong','Suitable Flower','No Flower'];
+        const ADDITIONAL_NAMES=['Self Draw','Last Tile','Robbing the Kong','Concealed Hand','Kong','Suitable Flower','No Flower'];
         S.lastResult={isWinningHand:true,handStructure:'Saved Hand',detectedPatterns:hd.scoringPatterns.filter(p=>!ADDITIONAL_NAMES.includes(p.name)),additionalPoints:hd.scoringPatterns.filter(p=>ADDITIONAL_NAMES.includes(p.name)),totalPoints:hd.totalPoints};
-        S.photoDataUrl=null; S.draft={concealedTiles:hd.tiles,groups:hd.exposedMelds||[],declaredPair:null,pendingSelection:[],flowers:hd.flowers}; S.winCtx={winMethod:hd.winMethod,isLastTile:hd.isLastTile,winnerId:hd.winnerId,isConcealedHand:hd.scoringPatterns.some(p=>p.name==='Concealed Hand')};
+        S.photoDataUrl=null; S.draft={concealedTiles:hd.tiles,groups:hd.exposedMelds||[],declaredPair:null,pendingSelection:[],flowers:hd.flowers}; S.winCtx={winMethod:hd.winMethod,isLastTile:hd.isLastTile,isRobbingKong:!!hd.isRobbingKong,winnerId:hd.winnerId,isConcealedHand:hd.scoringPatterns.some(p=>p.name==='Concealed Hand')};
         S.lastSettlement=hd.settlement; S.resultMode='game'; S.currentGameId=g.id; S.view='result'; break;
       }
     }
