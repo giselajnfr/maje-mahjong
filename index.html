@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>MAJÉ — Mahjong Scorer</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
@@ -13,6 +13,11 @@
   }
   html{scroll-padding-top:env(safe-area-inset-top,0px);}
   *{box-sizing:border-box;}
+  /* Disable double-tap / pinch zoom so rapid tile taps never zoom the screen */
+  html,body,button,label,.tile,.btn,.card{touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
+  html{-webkit-text-size-adjust:100%;text-size-adjust:100%;}
+  button,.tile,.btn{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}
+  input,select,textarea{font-size:16px;} /* stops iOS auto-zoom when focusing an input */
   body{background:var(--maje-bg); color:var(--maje-primary); font-family:'Georgia','Iowan Old Style',serif; min-height:100%;}
   .sans{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}
   .btn{display:flex;align-items:center;justify-content:center;border-radius:14px;padding:16px;font-size:16px;font-weight:600;min-height:56px;transition:transform .1s;}
@@ -42,8 +47,28 @@
   .rank-badge.r1{background:var(--maje-primary);color:#fff;}
   .champ{background:linear-gradient(160deg,#5B0015,#3d000e);color:#F7F4F0;border-radius:20px;padding:20px;text-align:center;box-shadow:0 6px 18px rgba(91,0,21,.25);}
   .badge-done{display:inline-block;background:var(--maje-primary);color:#fff;border-radius:999px;padding:2px 8px;font:700 10px -apple-system,sans-serif;letter-spacing:.08em;margin-left:6px;vertical-align:middle;}
+  .tile.xs{min-width:0;min-height:0;padding:1px;border-radius:5px;font-size:11px;cursor:default;box-shadow:0 1px 2px rgba(0,0,0,.14);}
+  .tile.xs:active{transform:none;}
+  .tile.xs{--rt:min(25px,calc((100vw - 180px)/10.8));}
+  .tile.xs img{height:var(--rt);width:auto;max-width:none;}
+  .tile.xs.blank{width:calc(var(--rt)*.76 + 4px);height:calc(var(--rt) + 4px);background:transparent;border:1.5px dashed #cdbfbf;box-shadow:none;color:#bba;font:700 11px -apple-system,sans-serif;}
+  .rg{display:inline-flex;gap:2px;}
+  .rsep{font:700 14px -apple-system,sans-serif;color:#b99aa1;padding:0 1px;}
+  .pt-badge{min-width:46px;height:46px;border-radius:14px;background:var(--maje-primary);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;line-height:1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+  .pt-badge b{font-size:19px;}
+  .pt-badge small{font-size:8px;letter-spacing:.12em;margin-top:3px;opacity:.85;}
+  .pt-badge.zero{background:var(--maje-secondary);color:var(--maje-primary);}
+  .rule-chip{border-radius:999px;padding:8px 14px;font:700 13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;white-space:nowrap;background:#fff;color:var(--maje-primary);border:1.5px solid var(--maje-secondary);}
+  .rule-chip.active{background:var(--maje-primary);color:#fff;border-color:var(--maje-primary);}
+  .top-bar{position:fixed; top:12px; right:12px; z-index:50; display:flex; align-items:center; gap:8px;}
+  .history-fab{
+    width:30px; height:30px; flex-shrink:0; border-radius:999px; display:flex; align-items:center; justify-content:center;
+    border:1px solid var(--maje-secondary); background:rgba(255,255,255,.92); color:var(--maje-primary);
+    box-shadow:0 2px 8px rgba(91,0,21,.08); backdrop-filter:blur(6px); cursor:pointer;
+  }
+  .history-fab:active{transform:scale(.94);}
   .lang-switcher{
-    position:fixed; top:12px; right:12px; z-index:50; display:flex; gap:2px;
+    display:flex; gap:2px;
     padding:3px; border:1px solid var(--maje-secondary); border-radius:999px;
     background:rgba(255,255,255,.92); box-shadow:0 2px 8px rgba(91,0,21,.08);
     backdrop-filter:blur(6px);
@@ -67,9 +92,14 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
 </head>
 <body>
-<div class="lang-switcher" aria-label="Language">
-  <button id="langEN" onclick="setLanguage('en')">EN</button>
-  <button id="langID" onclick="setLanguage('id')">ID</button>
+<div class="top-bar">
+  <button id="historyFab" class="history-fab" aria-label="Game History" title="Game History" onclick="app.act('GO_HISTORY')" style="display:none">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7.5V12l3 2"/></svg>
+  </button>
+  <div class="lang-switcher" aria-label="Language">
+    <button id="langEN" onclick="setLanguage('en')">EN</button>
+    <button id="langID" onclick="setLanguage('id')">ID</button>
+  </div>
 </div>
 <div id="app" class="max-w-md mx-auto min-h-screen pb-10"></div>
 
@@ -590,7 +620,7 @@ function viewHome(){
   <div class="px-6 flex flex-col gap-3 mt-4">
     <button class="btn btn-primary sans" onclick="app.act('GO_NEW_GAME')">+ New Game</button>
     <button class="btn btn-secondary sans" onclick="app.act('GO_QUICK')">✨ Count My Winning Hand</button>
-    <button class="btn btn-ghost sans" onclick="app.act('GO_HISTORY')">Game History</button>
+    <button class="btn btn-ghost sans" onclick="app.act('GO_RULES')">📖 House Rules</button>
   </div>
   ${recent.length?`<div class="px-6 mt-8">
     <div class="section-title">Recent Games</div>
@@ -645,7 +675,7 @@ function viewGame(){
   return h`
   <div class="px-5 pt-10 pb-4 flex items-center justify-between">
     <button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_HOME')">← Home</button>
-    <button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_HISTORY')">History</button>
+    <div class="flex gap-4"><button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_RULES')">${L('Rules','Aturan')}</button><button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_HISTORY')">History</button></div>
   </div>
   <div class="px-5 flex items-start justify-between">
     <div>
@@ -961,6 +991,137 @@ function viewFinish(){
   </div>`;
 }
 
+/* ============================= HOUSE RULES ============================= */
+/** Tiny helpers: bilingual picker + example builders. '?' = any tile (shown as a dashed blank). */
+function L(en,id){ return LANG==='id' ? id : en; }
+const _x=(k,n)=>Array(n).fill(k);
+const _run=(suit,a,b)=>{const o=[];for(let i=a;i<=b;i++)o.push(suit+i);return o;};
+const RULE_TABS=[['all',['All','Semua']],['common',['Common','Umum']],['bonus',['Bonus','Tambahan']],['special',['Special','Spesial']],['score',['Scoring','Skor']]];
+const RULES={
+  common:[
+    {n:['Chicken Hand','Chicken Hand'],pt:0,d:['Valid 4 sets + pair, but no scoring pattern.','4 set + 1 pair yang valid, tetapi tanpa pola poin.'],
+      ex:[[_run('BAM',1,3),_x('DOT4',3),_run('CHR',6,8),_run('DOT',7,9),_x('DOT5',2)]]},
+    {n:['Seat Wind','Angin Kursi'],pt:1,d:['Pong/Kong of your own seat wind.','Pong/Kong dari angin kursi Anda sendiri.'],
+      ex:[[_x('WIND_E',3),'/',_x('WIND_S',3),'/',_x('WIND_W',3),'/',_x('WIND_N',3)]]},
+    {n:['Round Wind','Angin Putaran'],pt:1,d:['Pong/Kong of the current round wind.','Pong/Kong dari angin putaran saat ini.'],
+      ex:[[_x('WIND_E',3),'/',_x('WIND_S',3),'/',_x('WIND_W',3),'/',_x('WIND_N',3)]]},
+    {n:['Dragon','Naga'],pt:1,d:['Each Dragon Pong/Kong. Multiple dragon sets add up.','Setiap Pong/Kong Naga. Beberapa set naga poinnya ditambahkan.'],
+      ex:[[_x('DRAG_R',3),'/',_x('DRAG_G',3),'/',_x('DRAG_W',3)]]},
+    {n:['Sequence Hand / All Chows','Sequence Hand / Semua Chi'],pt:1,d:['All 4 sets are Chows; pair is a simple tile.','Keempat set adalah Chi; pair berupa tile angka tengah (simple).'],
+      ex:[[_run('BAM',1,3),_run('BAM',4,6),_run('DOT',2,4),_run('CHR',7,9),_x('DOT5',2)]]},
+    {n:['No Orphan / All Simples','Tanpa Orphan / Semua Angka Tengah'],pt:1,d:['Only 2-8. No 1, 9 or honors.','Hanya angka 2-8. Tanpa 1, 9, atau honor.'],
+      ex:[[_run('DOT',2,4),_run('BAM',4,6),_run('CHR',5,7),_run('DOT',3,5),_x('BAM5',2)]]},
+    {n:['Pure Straight','Straight Murni'],pt:3,d:['1-9 in one suit, made as 123 + 456 + 789.','1-9 dalam satu jenis, dibuat sebagai 123 + 456 + 789.'],
+      ex:[[_run('BAM',1,9),_x('?',5)]]},
+    {n:['All Pongs','Semua Pong'],pt:3,d:['All 4 sets are Pongs/Kongs; no Chows.','Keempat set adalah Pong/Kong; tanpa Chi.'],
+      ex:[[_x('DOT5',3),_x('CHR2',3),_x('BAM6',3),_x('DRAG_R',3),_x('WIND_E',2)]]},
+    {n:['Mix Orphans','Orphan Campuran'],pt:3,d:['All combinations contain a 1, 9 or honor.','Semua kombinasi memuat 1, 9, atau honor.'],
+      ex:[[_run('DOT',1,3),_run('BAM',1,3),_run('DOT',7,9),_x('WIND_E',3),_x('DRAG_G',2)]]},
+    {n:['Pure Orphans','Orphan Murni'],pt:5,d:['All combinations contain a 1 or 9.','Semua kombinasi memuat 1 atau 9.'],
+      ex:[[_run('DOT',1,3),_x('DOT9',3),_run('BAM',1,3),_run('DOT',7,9),_x('CHR1',2)]]},
+    {n:['Half Flush','Campuran Satu Jenis (Half Flush)'],pt:3,d:['One suit + any Winds/Dragons.','Satu jenis + Angin/Naga apa pun.'],
+      ex:[[_run('BAM',1,3),_x('BAM6',3),_x('BAM8',3),_x('WIND_S',3),_x('DRAG_G',2)]]},
+    {n:['Full Flush','Satu Jenis (Full Flush)'],pt:7,d:['One suit only. No honors.','Hanya satu jenis. Tanpa honor.'],
+      ex:[[_run('DOT',1,3),_run('DOT',4,6),_run('DOT',7,9),_x('DOT9',3),_x('DOT5',2)]]}
+  ],
+  bonus:[
+    {n:['Robbing a Kong','Merampas Kong'],pt:1,d:['Taking the tile another player adds to a Pong to make a Kong.','Mengambil tile yang ditambahkan pemain lain ke Pong untuk membuat Kong.'],ex:[[_x('CHR2',4)]]},
+    {n:['Suitable Flower','Bunga yang Sesuai'],pt:1,d:['Flower/season matching your seat number. Each matching tile = +1.','Bunga/musim yang sesuai nomor kursi Anda. Setiap tile yang cocok = +1.'],ex:[[['FLW_PLUM','FLW_ORCHID','FLW_CHRYS','FLW_BAMBOO']]]},
+    {n:['No Flower','Tanpa Bunga'],pt:1,d:['You finish the hand without drawing any flower/season.','Anda menyelesaikan hand tanpa pernah mengambil bunga/musim.']},
+    {n:['Self Draw','Self Draw'],pt:1,d:['Winning tile comes from the wall.','Tile kemenangan berasal dari tembok.']},
+    {n:['Last Tile','Tile Terakhir'],pt:1,d:['Win on the final live-wall tile (or final discard, if your table uses it).','Menang dengan tile terakhir dari tembok (atau buangan terakhir, jika meja Anda memakainya).']},
+    {n:['Concealed Hand','Hand Tertutup'],pt:1,d:['No exposed melds; win on a discard. A self-drawn win is scored as Self Draw instead.','Tanpa meld terbuka; menang dari buangan. Menang dari tembok dihitung sebagai Self Draw.']}
+  ],
+  special:[
+    {n:['Little Dragon','Naga Kecil'],pt:5,d:['2 Dragon Pongs/Kongs + pair of the 3rd Dragon.','2 Pong/Kong Naga + pair dari Naga ketiga.'],
+      ex:[[_x('DRAG_R',3),_x('DRAG_G',3),_x('?',3),_x('?',3),_x('DRAG_W',2)]]},
+    {n:['Great Dragon','Naga Besar'],pt:8,d:['Pong/Kong of all 3 Dragons.','Pong/Kong dari ketiga Naga.'],
+      ex:[[_x('DRAG_R',3),_x('DRAG_G',3),_x('DRAG_W',3),_x('?',3),_x('?',2)]]},
+    {n:['Little Wind','Angin Kecil'],pt:10,d:['3 Wind Pongs/Kongs + pair of the 4th Wind.','3 Pong/Kong Angin + pair dari Angin keempat.'],
+      ex:[[_x('WIND_E',3),_x('WIND_S',3),_x('WIND_W',3),_x('?',3),_x('WIND_N',2)]]},
+    {n:['Great Wind','Angin Besar'],pt:13,d:['Pong/Kong of all 4 Winds + any pair.','Pong/Kong dari keempat Angin + pair apa pun.'],
+      ex:[[_x('WIND_E',3),_x('WIND_S',3),_x('WIND_W',3),_x('WIND_N',3),_x('?',2)]]},
+    {n:['7 Pairs','7 Pair'],pt:4,d:['Seven pairs. No standard 4 sets + pair structure.','Tujuh pair. Tanpa struktur standar 4 set + pair.'],
+      ex:[[['DOT1','DOT1','DOT4','DOT4','CHR2','CHR2','BAM8','BAM8','CHR5','CHR5','DOT5','DOT5','DRAG_R','DRAG_R']]]},
+    {n:['All Honor','Semua Honor'],pt:10,d:['Only Winds + Dragons.','Hanya Angin + Naga.'],
+      ex:[[_x('WIND_E',3),_x('WIND_S',3),_x('DRAG_G',3),_x('DRAG_W',3),_x('WIND_N',2)]]},
+    {n:['13 Orphans','13 Orphan'],pt:13,d:['One each of the 1/9 of 3 suits + 4 Winds + 3 Dragons + one duplicate.','Satu tile 1/9 dari 3 jenis + 4 Angin + 3 Naga + satu duplikat.'],
+      ex:[[['CHR1','CHR9','DOT1','DOT9','BAM1','BAM9','WIND_E','WIND_S','WIND_W','WIND_N','DRAG_G','DRAG_R','DRAG_W','WIND_E']]]},
+    {n:['Heavenly Gates / Nine Gates','Heavenly Gates / Nine Gates'],pt:15,d:['Concealed 1112345678999 in one suit + any tile of that suit.','Tertutup 1112345678999 dalam satu jenis + tile apa pun dari jenis itu.'],
+      ex:[[[..._x('DOT1',3),..._run('DOT',2,8),..._x('DOT9',3),'DOT5']]]},
+    {n:['Kong Hand / 4 Kongs','Empat Kong'],pt:12,d:['Four Kongs + one pair. Kongs can be exposed or concealed.','Empat Kong + satu pair. Kong boleh terbuka atau tertutup.'],
+      ex:[[_x('BAM1',4),_x('DOT5',4),_x('CHR7',4)],[_x('WIND_E',4),_x('DRAG_W',2)]]}
+  ]
+};
+function ruleTileHtml(k){
+  if(k==='?') return `<div class="tile xs blank">?</div>`;
+  return `<div class="tile xs">${tileShort(k)}</div>`;
+}
+function ruleExampleHtml(ex){
+  return ex.map(row=>`<div class="flex flex-wrap justify-center items-center gap-x-2 gap-y-1.5 mt-3">${
+    row.map(seg=> seg==='/' ? `<span class="rsep">/</span>` : `<div class="rg">${seg.map(ruleTileHtml).join('')}</div>`).join('')
+  }</div>`).join('');
+}
+function ruleCardHtml(r){
+  return `<div class="card pop">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <div class="font-bold sans text-[15px] leading-snug">${L(r.n[0],r.n[1])}</div>
+        <div class="sans text-xs text-[#8a5a63] mt-1">${L(r.d[0],r.d[1])}</div>
+      </div>
+      <div class="pt-badge ${r.pt===0?'zero':''}"><b>${r.pt}</b><small>${L('PTS','POIN')}</small></div>
+    </div>
+    ${r.ex?ruleExampleHtml(r.ex):''}
+  </div>`;
+}
+function ruleSectionHtml(title,sub,list){
+  return `<div class="mt-6">
+    <div class="section-title">${title}</div>
+    <div class="sans text-xs text-[#8a5a63] -mt-1 mb-3">${sub}</div>
+    <div class="flex flex-col gap-3">${list.map(ruleCardHtml).join('')}</div>
+  </div>`;
+}
+function ruleScoringHtml(){
+  const steps=[
+    L('A player wins by completing a valid hand.','Pemain menang dengan menyelesaikan hand yang valid.'),
+    L('Count the points in the winning hand (based on tile patterns).','Hitung poin pada winning hand (berdasarkan pola tile).'),
+    L('The losing players give points to the winner.','Pemain yang kalah memberikan poin kepada pemenang.')
+  ];
+  return `<div class="mt-6">
+    <div class="section-title">${L('How to score the game','Cara menghitung skor')}</div>
+    <div class="card pop">
+      ${steps.map((t,i)=>`<div class="flex items-start gap-3 ${i?'mt-3':''}"><div class="rank-badge r1" style="width:28px;height:28px;font-size:12px;">${i+1}</div><div class="sans text-sm pt-0.5">${t}</div></div>`).join('')}
+    </div>
+    <div class="section-title mt-5">${L('Who gives the points?','Siapa yang membayar poin?')}</div>
+    <div class="flex flex-col gap-3">
+      <div class="card pop"><div class="font-bold sans text-sm">Self Draw</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('All 3 other players give points to the winner.','Ketiga pemain lain memberikan poin kepada pemenang.')}</div></div>
+      <div class="card pop"><div class="font-bold sans text-sm">${L('Discard Win','Menang dari Buangan')}</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('Only the player who discarded the winning tile gives points to the winner.','Hanya pemain yang membuang tile kemenangan yang memberikan poin kepada pemenang.')}</div></div>
+    </div>
+    <div class="section-title mt-5">${L('Minimum Point Requirement','Syarat Poin Minimum')}</div>
+    <div class="card pop" style="border:2px solid var(--maje-primary);">
+      <div class="sans text-sm">${L('Most HK Mahjong games require a minimum of <b>3 points</b> to win (though casual play may allow 1 or 2). You can\'t just complete any hand: it needs enough scoring patterns to meet the threshold.','Kebanyakan permainan Mahjong HK mensyaratkan minimum <b>3 poin</b> untuk menang (permainan santai boleh 1 atau 2). Anda tidak bisa menang dengan hand apa saja: harus punya cukup pola poin untuk mencapai batas tersebut.')}</div>
+    </div>
+  </div>`;
+}
+function viewRules(){
+  const tab=S.rulesTab||'all';
+  const show=k=>tab==='all'||tab===k;
+  return h`
+  <div class="px-5 pt-10 pb-3"><button class="sans text-sm text-[#8a5a63]" onclick="app.act('RULES_BACK')">← Back</button>
+    <div class="text-2xl font-bold mt-3">House Rules</div>
+    <div class="sans text-xs text-[#8a5a63] mt-1">${L('Hong Kong Mahjong rules — hands that score points','Aturan Mahjong Hong Kong — hand yang memberi poin')}</div>
+  </div>
+  <div class="px-5 flex gap-2 overflow-x-auto pb-1">
+    ${RULE_TABS.map(([k,lbl])=>`<button class="rule-chip ${tab===k?'active':''}" onclick="app.act('RULES_TAB','${k}')">${L(lbl[0],lbl[1])}</button>`).join('')}
+  </div>
+  <div class="px-5 pb-6">
+    ${show('common')?ruleSectionHtml(L('Common Winning Hands','Winning Hand Umum'),L('The hands you will see most often.','Hand yang paling sering muncul.'),RULES.common):''}
+    ${show('bonus')?ruleSectionHtml(L('Additional Points','Poin Tambahan'),L('Extra points added on top of the hand.','Poin ekstra yang ditambahkan di atas hand.'),RULES.bonus):''}
+    ${show('special')?ruleSectionHtml(L('Special / High-Value Hands','Hand Spesial / Bernilai Tinggi'),L('Rare hands worth big points.','Hand langka dengan poin besar.'),RULES.special):''}
+    ${show('score')?ruleScoringHtml():''}
+  </div>`;
+}
+
 function viewHistory(){
   return h`
   <div class="px-5 pt-10 pb-4"><button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_HOME')">← Home</button>
@@ -992,9 +1153,11 @@ function render(){
     case 'chooseInterpretation': html=viewChooseInterpretation(); break;
     case 'history': html=viewHistory(); break;
     case 'finish': html=viewFinish(); break;
+    case 'rules': html=viewRules(); break;
     default: html=viewHome();
   }
   el.innerHTML=html;
+  const hf=document.getElementById('historyFab'); if(hf) hf.style.display=(S.view==='home')?'flex':'none';
   applyLanguage();
   if(S.view==='finish'){ setTimeout(()=>{ try{ app.refreshFinalCard(); }catch(e){} },0); }
   if(S.view==='result' && S.lastResult && S.lastResult.isWinningHand){
@@ -1236,6 +1399,9 @@ const app={
       case 'OPEN_GAME': S.currentGameId=payload; S.view='game'; break;
       case 'GO_GAME': S.view='game'; break;
       case 'GO_HISTORY': S.view='history'; break;
+      case 'GO_RULES': if(S.view!=='rules') S.rulesFrom=S.view; S.rulesTab='all'; S.view='rules'; window.scrollTo(0,0); break;
+      case 'RULES_TAB': S.rulesTab=payload; window.scrollTo(0,0); break;
+      case 'RULES_BACK': S.view=(S.rulesFrom&&S.rulesFrom!=='rules')?S.rulesFrom:'home'; window.scrollTo(0,0); break;
       case 'GO_FINISH': {
         const g=S.games.find(x=>x.id===S.currentGameId);
         if(!g||g.hands.length===0){ alert(tr('Add at least one hand before finishing the game.')); break; }
@@ -1452,6 +1618,8 @@ app.act=function(type,a,b){
   _origAct(type,a);
 };
 
+/* Block pinch-zoom (iOS Safari ignores user-scalable=no). Double-tap zoom is handled by touch-action:manipulation in CSS, so fast tile taps still register. */
+['gesturestart','gesturechange','gestureend'].forEach(ev=>document.addEventListener(ev,e=>e.preventDefault()));
 syncLanguageNames();
 render();
 </script>
