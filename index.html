@@ -38,6 +38,10 @@
   ::-webkit-scrollbar{display:none;}
   @keyframes pop{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
   .pop{animation:pop .25s ease-out;}
+  .rank-badge{width:34px;height:34px;border-radius:999px;display:flex;align-items:center;justify-content:center;font:700 14px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--maje-secondary);color:var(--maje-primary);flex-shrink:0;}
+  .rank-badge.r1{background:var(--maje-primary);color:#fff;}
+  .champ{background:linear-gradient(160deg,#5B0015,#3d000e);color:#F7F4F0;border-radius:20px;padding:20px;text-align:center;box-shadow:0 6px 18px rgba(91,0,21,.25);}
+  .badge-done{display:inline-block;background:var(--maje-primary);color:#fff;border-radius:999px;padding:2px 8px;font:700 10px -apple-system,sans-serif;letter-spacing:.08em;margin-left:6px;vertical-align:middle;}
   .lang-switcher{
     position:fixed; top:12px; right:12px; z-index:50; display:flex; gap:2px;
     padding:3px; border:1px solid var(--maje-secondary); border-radius:999px;
@@ -395,7 +399,7 @@ function save(){try{localStorage.setItem('maje_state',JSON.stringify({games:S.ga
 
 /* ============================= STATE ============================= */
 const persisted=load();
-let S={view:'home',games:persisted.games,quickHands:persisted.quickHands,currentGameId:null,draft:null,lastResult:null,lastSettlement:null,winCtx:null,photoDataUrl:null};
+let S={finalPhotoDataUrl:null,view:'home',games:persisted.games,quickHands:persisted.quickHands,currentGameId:null,draft:null,lastResult:null,lastSettlement:null,winCtx:null,photoDataUrl:null};
 
 function newDraft(){return {concealedTiles:[],groups:[],declaredPair:null,pendingSelection:[],flowers:[]};}
 
@@ -403,6 +407,15 @@ function emptyGame(name,players,roundWind,dealerIdx){
   const scores={}; players.forEach(p=>scores[p.id]=0);
   return {id:'g'+Date.now(),name:name||'',players,roundWind,dealerIdx,dealerTurnInRound:1,hands:[],scores,createdAt:new Date().toISOString()};
 }
+/** Final standings: sorted by score desc, ties share a rank. wins = hands won. */
+function computeStandings(g){
+  const rows=g.players.map(p=>({id:p.id,name:p.name,score:g.scores[p.id]||0,wins:g.hands.filter(h=>h.winnerId===p.id).length}));
+  rows.sort((a,b)=>b.score-a.score||b.wins-a.wins);
+  rows.forEach((r,i)=>{ r.rank = (i>0 && r.score===rows[i-1].score && r.wins===rows[i-1].wins) ? rows[i-1].rank : i+1; });
+  return rows;
+}
+function winsLabel(n){ return n+' '+(LANG==='id'?'menang':(n===1?'win':'wins')); }
+function fmtPts(v){ return (v>0?'+':'')+v; }
 /** The player object of the current dealer (dealer changes as the game progresses). */
 function currentDealer(g){ return g.players[g.dealerIdx]; }
 /** A player's seat wind is not fixed — it rotates together with the dealer.
@@ -501,6 +514,11 @@ const I18N = {
     'Mixed Orphans':'Orphan Campuran', 'Pure Orphans':'Orphan Murni', 'All Honor':'Semua Honor',
     'Dragon':'Naga', 'Little Dragon':'Naga Kecil', 'Great Dragon':'Naga Besar',
     'Little Wind':'Angin Kecil', 'Great Wind':'Angin Besar', 'Seat Wind':'Angin Kursi',
+    'Finish Game':'Selesaikan Permainan', 'Final Result':'Hasil Akhir', 'View Final Result':'Lihat Hasil Akhir',
+    'Final Leaderboard':'Papan Peringkat Akhir', 'Champion':'Juara', 'Hands played':'Hand dimainkan', 'Wins':'Menang',
+    'Take / Upload Group Photo':'Ambil / Upload Foto Bersama', 'Final Result Card':'Kartu Hasil Akhir',
+    'This photo becomes the background of your story card. Skip it to use the clean leaderboard layout.':'Foto ini jadi latar kartu story Anda. Lewati untuk memakai tampilan papan peringkat polos.',
+    'Back to Game':'Kembali ke Permainan', 'Done':'Selesai', 'FINISHED':'SELESAI', 'Add at least one hand before finishing the game.':'Catat minimal satu hand sebelum menyelesaikan permainan.',
     'Round Wind':'Angin Putaran', 'Seven Pairs':'Tujuh Pair', '13 Orphans':'13 Orphan',
     'Nine Gates':'Nine Gates', 'Four Kongs':'Empat Kong', 'Chicken Hand':'Chicken Hand',
     'Last Tile':'Tile Terakhir', 'Robbing the Kong':'Merampas Kong', 'Concealed Hand':'Hand Tertutup'
@@ -631,7 +649,7 @@ function viewGame(){
   </div>
   <div class="px-5 flex items-start justify-between">
     <div>
-      <div class="text-xl font-bold">Track ⓘ</div>
+      <div class="text-xl font-bold">Track ⓘ${g.finishedAt?'<span class="badge-done">FINISHED</span>':''}</div>
       <div class="sans text-xs text-[#8a5a63] mt-1">Hand ${g.hands.length+1}</div>
     </div>
     <div class="text-center">
@@ -657,6 +675,7 @@ function viewGame(){
   </div>
   <div class="px-5 mt-5">
     <button class="btn btn-primary sans" onclick="app.act('GO_RECORD_WIN')">+ Record Win</button>
+    <button class="btn btn-secondary sans mt-3" onclick="app.act('GO_FINISH')">🏁 ${g.finishedAt?'View Final Result':'Finish Game'}</button>
   </div>
   <div class="px-5 mt-6">
     <div class="section-title">Hand History</div>
@@ -898,6 +917,50 @@ function viewResult(){
   </div>`;
 }
 
+function viewFinish(){
+  const g=S.games.find(x=>x.id===S.currentGameId);
+  if(!g) return viewHome();
+  const st=computeStandings(g), champ=st[0];
+  const champs=st.filter(r=>r.rank===1);
+  const champName=champs.map(c=>c.name).join(' & ');
+  return h`
+  <div class="px-5 pt-10 pb-4"><button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_GAME')">← Back to Game</button>
+  <div class="text-2xl font-bold mt-3">Final Result</div>
+  <div class="sans text-xs text-[#8a5a63] mt-1">${g.name||'Untitled Game'} · ${g.hands.length} Hands played</div></div>
+  <div class="px-5">
+    <div class="champ pop">
+      <div style="font-size:30px;line-height:1">👑</div>
+      <div class="sans text-[11px] tracking-[.2em] font-bold mt-2" style="color:#E4D6D6">CHAMPION</div>
+      <div class="text-3xl font-bold mt-1">${champName}</div>
+      <div class="sans text-sm mt-2" style="color:#E4D6D6">${fmtPts(champ.score)} pts · ${winsLabel(champ.wins)}</div>
+    </div>
+    <div class="section-title mt-6">Final Leaderboard</div>
+    <div class="flex flex-col gap-2">
+    ${st.map(r=>`<div class="card flex items-center gap-3 pop ${r.rank===1?'!border-[#5B0015] !border-2':''}">
+      <div class="rank-badge ${r.rank===1?'r1':''}">${r.rank}</div>
+      <div class="flex-1 min-w-0"><div class="font-bold truncate">${r.name}</div><div class="sans text-xs text-[#8a5a63]">${winsLabel(r.wins)}</div></div>
+      <div class="sans font-bold text-lg" style="color:${r.score>=0?'#5B0015':'#a33'}">${fmtPts(r.score)}</div>
+    </div>`).join('')}
+    </div>
+    <div class="section-title mt-6">Final Result Card</div>
+    <label for="finalPhotoInputEl" class="btn ${S.finalPhotoDataUrl?'btn-ghost':'btn-primary'} sans !min-h-[56px] cursor-pointer flex items-center justify-center gap-2 mb-1">
+      <span style="font-size:20px;">📷</span>
+      <span>${S.finalPhotoDataUrl?'✓ Photo added — tap to change':'Take / Upload Group Photo'}</span>
+    </label>
+    <input id="finalPhotoInputEl" type="file" accept="image/*" capture="environment" class="hidden" onchange="app.handleFinalPhoto(event)">
+    <div class="sans text-xs text-[#8a5a63] mb-2 text-center">This photo becomes the background of your story card. Skip it to use the clean leaderboard layout.</div>
+    ${S.finalPhotoDataUrl?`<button class="sans text-xs text-[#8a5a63] underline block mx-auto mb-2" onclick="app.act('CLEAR_FINAL_PHOTO')">Remove photo</button>`:''}
+    <div class="mt-1 rounded-2xl overflow-hidden border border-[#E4D6D6] shadow-sm">
+      <canvas id="finalCanvas" style="width:100%;display:block;background:#F7F4F0;"></canvas>
+    </div>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-ghost sans !min-h-[44px] text-sm flex-1" onclick="app.saveFinalImage()">💾 Save Image</button>
+      <button class="btn btn-primary sans !min-h-[44px] text-sm flex-1" onclick="app.shareFinalImage()">📤 Share</button>
+    </div>
+    <button class="btn btn-secondary sans mt-5 w-full" onclick="app.act('FINISH_DONE')">Done</button>
+  </div>`;
+}
+
 function viewHistory(){
   return h`
   <div class="px-5 pt-10 pb-4"><button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_HOME')">← Home</button>
@@ -905,7 +968,7 @@ function viewHistory(){
   <div class="px-5 flex flex-col gap-3">
   ${S.games.length===0 && S.quickHands.length===0?`<div class="sans text-sm text-[#8a5a63]">Nothing here yet.</div>`:''}
   ${S.games.slice().reverse().map(g=>`<div class="card cursor-pointer" onclick="app.act('OPEN_GAME','${g.id}')">
-    <div class="flex justify-between"><span class="font-bold">${g.name||'Untitled Game'}</span><span class="sans text-xs text-[#8a5a63]">${new Date(g.createdAt).toLocaleDateString()}</span></div>
+    <div class="flex justify-between"><span class="font-bold">${g.name||'Untitled Game'}${g.finishedAt?'<span class="badge-done">FINISHED</span>':''}</span><span class="sans text-xs text-[#8a5a63]">${new Date(g.createdAt).toLocaleDateString()}</span></div>
     <div class="sans text-xs text-[#8a5a63] mt-1">${g.players.map(p=>`${p.name} ${g.scores[p.id]>=0?'+':''}${g.scores[p.id]}`).join(' · ')}</div>
   </div>`).join('')}
   ${S.quickHands.length?`<div class="section-title mt-2">Counted Hands</div>`:''}
@@ -928,10 +991,12 @@ function render(){
     case 'result': html=viewResult(); break;
     case 'chooseInterpretation': html=viewChooseInterpretation(); break;
     case 'history': html=viewHistory(); break;
+    case 'finish': html=viewFinish(); break;
     default: html=viewHome();
   }
   el.innerHTML=html;
   applyLanguage();
+  if(S.view==='finish'){ setTimeout(()=>{ try{ app.refreshFinalCard(); }catch(e){} },0); }
   if(S.view==='result' && S.lastResult && S.lastResult.isWinningHand){
     setTimeout(()=>{ try{ app.refreshCard(); }catch(e){} },0);
   }
@@ -1046,6 +1111,113 @@ async function drawResultCard(canvas,data){
   ctx.fillStyle='#8a5a63'; ctx.font='24px -apple-system,sans-serif'; ctx.fillText('@majemahjong',W/2,H-56);
 }
 
+function fitText(ctx,text,maxW){
+  if(ctx.measureText(text).width<=maxW) return text;
+  let t=text; while(t.length>1 && ctx.measureText(t+'…').width>maxW) t=t.slice(0,-1);
+  return t+'…';
+}
+function drawLogoBadge(ctx,logo,cx,cy,r){
+  ctx.fillStyle='#F7F4F0'; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+  if(logo){ const sz=r*1.7; ctx.drawImage(logo,cx-sz/2,cy-sz/2,sz,sz); }
+}
+async function drawFinalCard(canvas,d){
+  const W=1080,H=1920;
+  canvas.width=W; canvas.height=H;
+  const ctx=canvas.getContext('2d');
+  const logo=await getLogoImage().catch(()=>null);
+  const SANS='-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', SERIF='Georgia,"Iowan Old Style",serif';
+  const st=d.standings, top=st.slice(0,3), rest=st.slice(3);
+  const hasPhoto=!!d.photoDataUrl;
+  ctx.textAlign='center';
+
+  if(hasPhoto){
+    /* ---------- Photo story layout ---------- */
+    ctx.fillStyle='#2a000a'; ctx.fillRect(0,0,W,H);
+    try{ const img=await loadImage(d.photoDataUrl); drawCoverImage(ctx,img,0,0,W,H,0); }catch(e){}
+    let g1=ctx.createLinearGradient(0,0,0,520);
+    g1.addColorStop(0,'rgba(60,0,14,.92)'); g1.addColorStop(1,'rgba(60,0,14,0)');
+    ctx.fillStyle=g1; ctx.fillRect(0,0,W,520);
+    let g2=ctx.createLinearGradient(0,H-900,0,H);
+    g2.addColorStop(0,'rgba(40,0,10,0)'); g2.addColorStop(.45,'rgba(40,0,10,.88)'); g2.addColorStop(1,'rgba(30,0,8,.97)');
+    ctx.fillStyle=g2; ctx.fillRect(0,H-900,W,900);
+
+    // header: logo on top, venue name centered below
+    drawLogoBadge(ctx,logo,W/2,170,80);
+    ctx.textAlign='center'; ctx.fillStyle='#F7F4F0'; ctx.font=`bold 32px ${SERIF}`;
+    ctx.fillText(fitText(ctx,'MAJE MAHJONG & SHAOKAO - GADING SERPONG',W-120),W/2,300);
+
+    // title block
+    let y=H-740;
+    ctx.fillStyle='#E4D6D6'; ctx.font=`bold 28px ${SANS}`; ctx.fillText('F I N A L   R E S U L T',W/2,y); y+=82;
+    ctx.fillStyle='#F7F4F0'; ctx.font=`bold 68px ${SERIF}`; ctx.fillText(fitText(ctx,d.title,W-160),W/2,y); y+=48;
+    ctx.fillStyle='#E4D6D6'; ctx.font=`26px ${SANS}`; ctx.fillText(`${d.date}  ·  ${d.handsCount} ${tr('Hands played').toLowerCase()}`,W/2,y); y+=84;
+
+    // podium (top 3)
+    const colW=(W-120)/3, cy0=y;
+    top.forEach((r,i)=>{
+      const cx=60+colW*i+colW/2, first=r.rank===1;
+      const rad=first?62:52, cyy=cy0+(first?0:12);
+      ctx.beginPath(); ctx.arc(cx,cyy+rad,rad,0,Math.PI*2);
+      if(first){ ctx.fillStyle='#F7F4F0'; ctx.fill(); }
+      else { ctx.fillStyle='rgba(247,244,240,.12)'; ctx.fill(); ctx.strokeStyle='#E4D6D6'; ctx.lineWidth=3; ctx.stroke(); }
+      ctx.fillStyle=first?'#5B0015':'#F7F4F0'; ctx.font=`bold ${first?58:48}px ${SERIF}`; ctx.fillText(String(r.rank),cx,cyy+rad+(first?20:16));
+      let ty=cyy+rad*2+52;
+      ctx.fillStyle='#F7F4F0'; ctx.font=`bold ${first?38:34}px ${SANS}`; ctx.fillText(fitText(ctx,r.name,colW-24),cx,ty); ty+=60;
+      ctx.fillStyle=r.score>=0?'#F7F4F0':'#ffb3b3'; ctx.font=`bold ${first?50:44}px ${SERIF}`; ctx.fillText(fmtPts(r.score),cx,ty); ty+=38;
+      ctx.fillStyle='#E4D6D6'; ctx.font=`24px ${SANS}`; ctx.fillText(winsLabel(r.wins),cx,ty);
+    });
+    let ry=cy0+345;
+    rest.forEach(r=>{
+      ctx.fillStyle='rgba(247,244,240,.12)'; roundRectPath(ctx,80,ry,W-160,76,38); ctx.fill();
+      ctx.textAlign='left'; ctx.fillStyle='#E4D6D6'; ctx.font=`bold 28px ${SANS}`; ctx.fillText(String(r.rank),122,ry+49);
+      ctx.fillStyle='#F7F4F0'; ctx.font=`600 30px ${SANS}`; ctx.fillText(fitText(ctx,r.name,430),176,ry+49);
+      ctx.fillStyle='#E4D6D6'; ctx.font=`22px ${SANS}`; ctx.fillText(winsLabel(r.wins),650,ry+48);
+      ctx.textAlign='right'; ctx.fillStyle=r.score>=0?'#F7F4F0':'#ffb3b3'; ctx.font=`bold 32px ${SANS}`; ctx.fillText(fmtPts(r.score),W-122,ry+49);
+      ctx.textAlign='center'; ry+=90;
+    });
+    ctx.fillStyle='#E4D6D6'; ctx.font=`22px ${SANS}`; ctx.fillText('@majemahjong',W/2,H-70);
+    return;
+  }
+
+  /* ---------- Clean leaderboard layout ---------- */
+  ctx.fillStyle='#F7F4F0'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#5B0015'; ctx.fillRect(0,0,W,14);
+  let y=70;
+  if(logo){ ctx.drawImage(logo,W/2-125,y,250,250); y+=268; } else { ctx.fillStyle='#5B0015'; ctx.font=`bold 76px ${SERIF}`; ctx.fillText('MAJÉ',W/2,y+76); y+=122; }
+  ctx.fillStyle='#8a5a63'; ctx.font=`26px ${SERIF}`; ctx.fillText('F I N A L   R E S U L T',W/2,y); y+=66;
+  ctx.fillStyle='#5B0015'; ctx.font=`bold 62px ${SERIF}`; ctx.fillText(fitText(ctx,d.title,W-160),W/2,y); y+=44;
+  ctx.fillStyle='#8a5a63'; ctx.font=`24px ${SANS}`; ctx.fillText(`${d.date}  ·  ${d.handsCount} ${tr('Hands played').toLowerCase()}`,W/2,y); y+=70;
+
+  // champion panel
+  const px=64, pw=W-128, champs=st.filter(r=>r.rank===1), c=champs[0];
+  const ph=340;
+  const grad=ctx.createLinearGradient(0,y,0,y+ph); grad.addColorStop(0,'#6e001a'); grad.addColorStop(1,'#3d000e');
+  ctx.fillStyle=grad; roundRectPath(ctx,px,y,pw,ph,32); ctx.fill();
+  ctx.fillStyle='#E4D6D6'; ctx.font=`58px ${SANS}`; ctx.fillText('👑',W/2,y+82);
+  ctx.font=`bold 24px ${SANS}`; ctx.fillText((tr('Champion')).toUpperCase().split('').join(' '),W/2,y+128);
+  ctx.fillStyle='#F7F4F0'; ctx.font=`bold 78px ${SERIF}`; ctx.fillText(fitText(ctx,champs.map(x=>x.name).join(' & '),pw-80),W/2,y+222);
+  ctx.fillStyle='#E4D6D6'; ctx.font=`bold 36px ${SANS}`; ctx.fillText(`${fmtPts(c.score)} pts  ·  ${winsLabel(c.wins)}`,W/2,y+288);
+  y+=ph+56;
+
+  // other places
+  const others=st.filter(r=>r.rank!==1);
+  others.forEach(r=>{
+    ctx.fillStyle='#fff'; roundRectPath(ctx,px,y,pw,128,28); ctx.fill();
+    ctx.strokeStyle='#E4D6D6'; ctx.lineWidth=2; roundRectPath(ctx,px,y,pw,128,28); ctx.stroke();
+    ctx.fillStyle='#E4D6D6'; ctx.beginPath(); ctx.arc(px+72,y+64,36,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#5B0015'; ctx.font=`bold 36px ${SERIF}`; ctx.textAlign='center'; ctx.fillText(String(r.rank),px+72,y+77);
+    ctx.textAlign='left'; ctx.fillStyle='#3a1c22'; ctx.font=`bold 40px ${SANS}`; ctx.fillText(fitText(ctx,r.name,430),px+136,y+64);
+    ctx.fillStyle='#8a5a63'; ctx.font=`24px ${SANS}`; ctx.fillText(winsLabel(r.wins),px+136,y+102);
+    ctx.textAlign='right'; ctx.fillStyle=r.score>=0?'#5B0015':'#a33'; ctx.font=`bold 52px ${SERIF}`; ctx.fillText(fmtPts(r.score),px+pw-40,y+82);
+    ctx.textAlign='center'; y+=156;
+  });
+
+  ctx.fillStyle='#8a5a63'; ctx.font=`22px ${SANS}`; ctx.fillText(d.date,W/2,H-170);
+  ctx.strokeStyle='#E4D6D6'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(px,H-140); ctx.lineTo(px+pw,H-140); ctx.stroke();
+  ctx.fillStyle='#5B0015'; ctx.font=`bold 26px ${SERIF}`; ctx.fillText('MAJE Mahjong & Shaokao - Gading Serpong',W/2,H-92);
+  ctx.fillStyle='#8a5a63'; ctx.font=`24px ${SANS}`; ctx.fillText('@majemahjong',W/2,H-56);
+}
+
 /* ============================= ACTIONS ============================= */
 const app={
   setDraftName(v){ S.draft.name=v; },
@@ -1064,6 +1236,17 @@ const app={
       case 'OPEN_GAME': S.currentGameId=payload; S.view='game'; break;
       case 'GO_GAME': S.view='game'; break;
       case 'GO_HISTORY': S.view='history'; break;
+      case 'GO_FINISH': {
+        const g=S.games.find(x=>x.id===S.currentGameId);
+        if(!g||g.hands.length===0){ alert(tr('Add at least one hand before finishing the game.')); break; }
+        S.finalPhotoDataUrl=null; S.view='finish'; break;
+      }
+      case 'CLEAR_FINAL_PHOTO': S.finalPhotoDataUrl=null; break;
+      case 'FINISH_DONE': {
+        const g=S.games.find(x=>x.id===S.currentGameId);
+        if(g && !g.finishedAt){ g.finishedAt=new Date().toISOString(); save(); }
+        S.finalPhotoDataUrl=null; S.view='game'; break;
+      }
       case 'GO_RECORD_WIN': S.winCtx={winnerId:null,winMethod:null,discardedBy:null,isLastTile:false,isRobbingKong:false,isConcealedHand:false}; S.draft=newDraft(); S.view='recordWin'; break;
       case 'GO_QUICK': S.winCtx={winMethod:null,discardedBy:null,seatWind:null,roundWind:null,isLastTile:false,isRobbingKong:false,isConcealedHand:false}; S.draft=newDraft(); S.view='quick'; break;
       case 'PICK_WINNER': S.winCtx.winnerId=payload; break;
@@ -1154,6 +1337,7 @@ const app={
         g.hands.push(hand);
         g.players.forEach(p=>{g.scores[p.id]=(g.scores[p.id]||0)+S.lastSettlement[p.id];});
         advanceDealerAndRound(g,S.winCtx.winnerId);
+        g.finishedAt=null;
         save(); S.view='game'; break;
       }
       case 'SAVE_QUICK': {
@@ -1177,6 +1361,41 @@ const app={
     reader.onload=()=>{ S.photoDataUrl=reader.result; render(); };
     reader.onerror=()=>{ alert('Could not read that photo.'); };
     reader.readAsDataURL(f);
+  },
+  handleFinalPhoto(ev){
+    const f=ev.target.files[0]; if(!f) return;
+    const reader=new FileReader();
+    reader.onload=()=>{ S.finalPhotoDataUrl=reader.result; render(); };
+    reader.onerror=()=>{ alert('Could not read that photo.'); };
+    reader.readAsDataURL(f);
+  },
+  refreshFinalCard(){
+    const canvas=document.getElementById('finalCanvas');
+    const g=S.games.find(x=>x.id===S.currentGameId); if(!canvas||!g) return;
+    drawFinalCard(canvas,{
+      title:g.name||tr('Untitled Game'), standings:computeStandings(g), handsCount:g.hands.length,
+      date:new Date().toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}),
+      photoDataUrl:S.finalPhotoDataUrl
+    });
+  },
+  saveFinalImage(){
+    const canvas=document.getElementById('finalCanvas'); if(!canvas) return;
+    try{
+      const a=document.createElement('a'); a.href=canvas.toDataURL('image/png'); a.download='maje-final-result.png';
+      document.body.appendChild(a); a.click(); a.remove();
+    }catch(e){ alert('Could not save the image on this device.'); }
+  },
+  shareFinalImage(){
+    const canvas=document.getElementById('finalCanvas'); if(!canvas) return;
+    canvas.toBlob(async(blob)=>{
+      if(!blob){ app.saveFinalImage(); return; }
+      try{
+        const file=new File([blob],'maje-final-result.png',{type:'image/png'});
+        if(navigator.canShare && navigator.canShare({files:[file]})){
+          await navigator.share({files:[file],title:'MAJÉ Final Result',text:'Final result at MAJÉ 🏁'});
+        } else { app.saveFinalImage(); }
+      }catch(e){ /* cancelled */ }
+    },'image/png');
   },
   refreshCard(){
     const canvas=document.getElementById('cardCanvas');

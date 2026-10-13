@@ -1,4 +1,4 @@
-const CACHE_NAME = 'maje-v2';
+const CACHE_NAME = 'maje-v3';
 
 const APP_SHELL = [
   './',
