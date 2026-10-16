@@ -477,8 +477,10 @@ function finalizeResult(mode,resObj){
     const winner=g.players.find(p=>p.id===S.winCtx.winnerId);
     const others=g.players.filter(p=>p.id!==winner.id);
     let settlement={};
+    // Self Draw: each of the 3 other players pays the full hand points (winner receives points x 3).
+    // Discard Win: only the discarder pays, and pays DOUBLE (winner receives points x 2); the other two pay nothing.
     if(S.winCtx.winMethod==='SELF_DRAW'){settlement[winner.id]=resObj.totalPoints*3;others.forEach(p=>settlement[p.id]=-resObj.totalPoints);}
-    else{settlement[winner.id]=resObj.totalPoints;others.forEach(p=>settlement[p.id]=p.id===S.winCtx.discardedBy?-resObj.totalPoints:0);}
+    else{settlement[winner.id]=resObj.totalPoints*2;others.forEach(p=>settlement[p.id]=p.id===S.winCtx.discardedBy?-resObj.totalPoints*2:0);}
     S.lastSettlement=settlement;
   } else {
     S.lastSettlement=null;
@@ -1085,7 +1087,7 @@ function ruleScoringHtml(){
   const steps=[
     L('A player wins by completing a valid hand.','Pemain menang dengan menyelesaikan hand yang valid.'),
     L('Count the points in the winning hand (based on tile patterns).','Hitung poin pada winning hand (berdasarkan pola tile).'),
-    L('The losing players give points to the winner.','Pemain yang kalah memberikan poin kepada pemenang.')
+    L('The losing players pay the winner (see "Who gives the points?" below).','Pemain yang kalah membayar pemenang (lihat "Siapa yang membayar poin?" di bawah).')
   ];
   return `<div class="mt-6">
     <div class="section-title">${L('How to score the game','Cara menghitung skor')}</div>
@@ -1094,8 +1096,8 @@ function ruleScoringHtml(){
     </div>
     <div class="section-title mt-5">${L('Who gives the points?','Siapa yang membayar poin?')}</div>
     <div class="flex flex-col gap-3">
-      <div class="card pop"><div class="font-bold sans text-sm">Self Draw</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('All 3 other players give points to the winner.','Ketiga pemain lain memberikan poin kepada pemenang.')}</div></div>
-      <div class="card pop"><div class="font-bold sans text-sm">${L('Discard Win','Menang dari Buangan')}</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('Only the player who discarded the winning tile gives points to the winner.','Hanya pemain yang membuang tile kemenangan yang memberikan poin kepada pemenang.')}</div></div>
+      <div class="card pop"><div class="font-bold sans text-sm">Self Draw</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('Each of the 3 other players pays the full points of the hand to the winner. Example: a 4-point hand = each player pays 4, so the winner receives 12.','Masing-masing dari ketiga pemain lain membayar poin hand penuh kepada pemenang. Contoh: hand 4 poin = setiap pemain membayar 4, sehingga pemenang menerima 12.')}</div></div>
+      <div class="card pop"><div class="font-bold sans text-sm">${L('Discard Win','Menang dari Buangan')}</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('Only the player who discarded the winning tile pays, and they pay <b>double</b> the hand points. The other two players pay nothing. Example: a 4-point hand = the discarder pays 8, so the winner receives 8.','Hanya pemain yang membuang tile kemenangan yang membayar, dan membayar <b>dua kali lipat</b> poin hand. Dua pemain lain tidak membayar. Contoh: hand 4 poin = pemain yang membuang membayar 8, sehingga pemenang menerima 8.')}</div></div>
     </div>
     <div class="section-title mt-5">${L('Minimum Point Requirement','Syarat Poin Minimum')}</div>
     <div class="card pop" style="border:2px solid var(--maje-primary);">
