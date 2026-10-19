@@ -160,6 +160,7 @@ function tileInfo(k){
   return {honor:false,suit:k.slice(0,3),val:parseInt(k.slice(3))};
 }
 function windName(w){return WIND_NAME[w]||w;}
+function tileName(k){const i=tileInfo(k); if(i.honor) return i.kind==='WIND'?windName(i.val)+' Wind':(DRAG_NAME[i.val]||k); return `${SUIT_NAME[i.suit]||i.suit} ${i.val}`;}
 
 /* ============================= SCORING ENGINE ============================= */
 function tileCompare(a,b){
@@ -312,12 +313,12 @@ function groupHasOrphan(g){
   if(g.type==='PONG'){const i=tileInfo(g.tiles[0]); return i.honor || i.val===1 || i.val===9;}
   return g.tiles.some(t=>{const i=tileInfo(t); return !i.honor && (i.val===1||i.val===9);});
 }
-function scoreStandard(groups,pair,roundWind,seatWind){
+function scoreStandard(groups,pair,roundWind,seatWind,isConcealed){
   const patterns=[];
-  const allChow=groups.every(g=>g.type==='CHI');
+  const allChi=groups.every(g=>g.type==='CHI');
   const allPong=groups.every(g=>g.type==='PONG');
-  if(allChow) patterns.push({name:'All Chows',points:1,detail:'All four sets are Chows (sequences).'});
-  if(allPong) patterns.push({name:'All Pongs',points:3,detail:'All four sets are Pongs or Kongs — no Chows.'});
+  if(allChi) patterns.push({name:'All Chi',points:1,detail:'All four sets are Chi (sequences).'});
+  if(allPong) patterns.push({name:'All Pongs',points:3,detail:'All four sets are Pongs or Kongs — no Chi.'});
   const allSetTiles=groups.flatMap(g=>g.tiles).concat([pair]);
   const suitsUsed=new Set(allSetTiles.filter(t=>!tileInfo(t).honor).map(t=>tileInfo(t).suit));
   const hasHonor=allSetTiles.some(t=>tileInfo(t).honor);
@@ -355,11 +356,77 @@ function scoreStandard(groups,pair,roundWind,seatWind){
   if(seatG) patterns.push({name:'Seat Wind',points:1,detail:`Pong/Kong of the player's own Seat Wind (${windName(seatWind)}).`});
   const roundG=groups.find(g=>g.type==='PONG'&&tileInfo(g.tiles[0]).honor&&tileInfo(g.tiles[0]).kind==='WIND'&&tileInfo(g.tiles[0]).val===roundWind);
   if(roundG) patterns.push({name:'Round Wind',points:1,detail:`Pong/Kong of the current Round Wind (${windName(roundWind)}).`});
+
+  /* ---- Combined house-rule patterns (Classic / New6 / New18) ---- */
+  const SUITS3=['CHR','BAM','DOT'];
+  const chows=groups.filter(g=>g.type==='CHI').map(g=>({suit:tileInfo(g.tiles[0]).suit,start:Math.min(...g.tiles.map(t=>tileInfo(t).val))}));
+  const pongs=groups.filter(g=>g.type==='PONG').map(g=>({tile:g.tiles[0],info:tileInfo(g.tiles[0]),exposed:!!g.isExposed}));
+  const pongVals=su=>pongs.filter(x=>!x.info.honor&&x.info.suit===su).map(x=>x.info.val);
+  const pairInfo=tileInfo(pair);
+  // Lacking a Suit: exactly 2 suits, no honors
+  if(suitsUsed.size===2 && !hasHonor) patterns.push({name:'Lacking a Suit',points:1,detail:'Only two suits are used, with no Winds or Dragons.'});
+  // 2-5-8 Eye
+  if(!pairInfo.honor && [2,5,8].includes(pairInfo.val)) patterns.push({name:'2-5-8 Eye',points:1,detail:'The pair is a 2, 5 or 8 of a suit.'});
+  // All One or Nine (replaces Mixed / Pure Orphans so the same tiles are not paid twice)
+  const isAllOneNine=allSetTiles.every(t=>{const i=tileInfo(t);return !i.honor&&(i.val===1||i.val===9);});
+  if(isAllOneNine){
+    patterns.push({name:'All One or Nine',points:18,detail:'Every tile is a 1 or a 9 of a suit (no Winds or Dragons).'});
+  }
+  // Three Suits with Winds and Dragons
+  const hasWindTile=allSetTiles.some(t=>tileInfo(t).honor&&tileInfo(t).kind==='WIND');
+  const hasDragTile=allSetTiles.some(t=>tileInfo(t).honor&&tileInfo(t).kind==='DRAG');
+  if(suitsUsed.size===3 && hasWindTile && hasDragTile) patterns.push({name:'Three Suits + Winds & Dragons',points:1,detail:'All three suits plus at least one Wind and one Dragon tile.'});
+  // Double Chi / Two Double Chi
+  const chowCount={}; chows.forEach(c=>{const k=c.suit+c.start; chowCount[k]=(chowCount[k]||0)+1;});
+  const dblPairs=Object.values(chowCount).reduce((a,n)=>a+Math.floor(n/2),0);
+  if(dblPairs>=2) patterns.push({name:'Two Double Chi',points:10,detail:'Two pairs of identical Chi (same suit, same numbers).'});
+  else if(dblPairs===1) patterns.push({name:'Double Chi',points:1,detail:'Two identical Chi (same suit, same numbers).'});
+  // Three / Four Sequence Pong (consecutive numbers, same suit)
+  let longestRun=0;
+  SUITS3.forEach(su=>{let run=0,prev=-9; pongVals(su).sort((a,b)=>a-b).forEach(v=>{run=(v===prev+1)?run+1:1; prev=v; longestRun=Math.max(longestRun,run);});});
+  if(longestRun>=4) patterns.push({name:'Four Sequence Pong',points:8,detail:'Four consecutive-number Pongs/Kongs in one suit.'});
+  else if(longestRun===3) patterns.push({name:'Three Sequence Pong',points:2,detail:'Three consecutive-number Pongs/Kongs in one suit.'});
+  // Three / Four Hidden Pong: sets are treated as OPEN by default (players rarely label them), so these only
+  // count when the player explicitly chose Concealed Hand. A set manually marked Open never counts as hidden.
+  const hiddenPongs=isConcealed?pongs.filter(x=>!x.exposed).length:0;
+  if(hiddenPongs>=4) patterns.push({name:'Four Hidden Pong',points:10,detail:'Concealed Hand with four Pongs/Kongs made from your own tiles.'});
+  else if(hiddenPongs===3) patterns.push({name:'Three Hidden Pong',points:2,detail:'Concealed Hand with three Pongs/Kongs made from your own tiles.'});
+  // Three Suits Pong / Three Suits Chi (same number in all 3 suits)
+  for(let v=1;v<=9;v++){
+    if(SUITS3.every(su=>pongVals(su).includes(v))) patterns.push({name:'Three Suits Pong',points:3,detail:`Pong/Kong of ${v} in all three suits.`});
+    if(SUITS3.every(su=>chows.some(c=>c.suit===su&&c.start===v))) patterns.push({name:'Three Suits Chi',points:3,detail:`Chi starting at ${v} in all three suits.`});
+  }
+  // Four in One: all 4 copies of a tile used as a Pong + a Chi
+  const nonKong=groups.filter(g=>!g.isKong), tileCnt={};
+  nonKong.forEach(g=>g.tiles.forEach(t=>{tileCnt[t]=(tileCnt[t]||0)+1;}));
+  Object.keys(tileCnt).forEach(t=>{
+    if(tileCnt[t]===4 && nonKong.some(g=>g.type==='PONG'&&g.tiles[0]===t) && nonKong.some(g=>g.type==='CHI'&&g.tiles.includes(t)))
+      patterns.push({name:'Four in One',points:1,detail:`All four ${tileName(t)} tiles: a Pong plus one in a Chi.`});
+  });
+  // Min-Max Chi (123 + 789 in the same suit; not counted when it is already a Pure Straight)
+  SUITS3.forEach(su=>{const st=chows.filter(c=>c.suit===su).map(c=>c.start); if(st.includes(1)&&st.includes(7)&&!st.includes(4)) patterns.push({name:'Min-Max Chi',points:1,detail:`${SUIT_NAME[su]} 123 and 789.`});});
+  // Min-Max Pong (Pong/Kong of 1 and 9 in the same suit)
+  SUITS3.forEach(su=>{const v=pongVals(su); if(v.includes(1)&&v.includes(9)) patterns.push({name:'Min-Max Pong',points:1,detail:`${SUIT_NAME[su]} Pong/Kong of 1 and of 9.`});});
+  /* ---- Higher-tier hands replace the lower patterns they already contain ---- */
+  const dropPatterns=(...names)=>{for(let i=patterns.length-1;i>=0;i--) if(names.includes(patterns[i].name)) patterns.splice(i,1);};
+  const has=n=>patterns.some(p=>p.name===n);
+  // Great / Little Dragon replace the +1 per Dragon set; Great / Little Wind replace the Seat / Round Wind points.
+  if(has('Great Dragon')) dropPatterns('Little Dragon');
+  if(has('Great Dragon')||has('Little Dragon')) dropPatterns('Dragon');
+  if(has('Great Wind')) dropPatterns('Little Wind');
+  if(has('Great Wind')||has('Little Wind')) dropPatterns('Seat Wind','Round Wind');
+  // Orphan family: Pure Orphans > Mixed Orphans; All Honor replaces Mixed Orphans and the per-set Dragon / Wind points.
+  if(has('Pure Orphans')) dropPatterns('Mixed Orphans');
+  if(has('All Honor')) dropPatterns('Mixed Orphans','All Pongs','Dragon','Seat Wind','Round Wind');
+  // All One or Nine always contains All Pongs and Min-Max Pong, so it replaces them (and both Orphans hands).
+  if(has('All One or Nine')) dropPatterns('Mixed Orphans','Pure Orphans','All Pongs','Min-Max Pong','Three Suits Pong');
+  // Four Hidden Pong already means four Pongs, so it replaces All Pongs.
+  if(has('Four Hidden Pong')) dropPatterns('All Pongs');
   return patterns;
 }
 
 function analyzeHand(input){
-  const {concealedTiles,melds,declaredPair,flowers,roundWind,seatWind,winMethod,isLastTile,isRobbingKong,isConcealedHand}=input;
+  const {concealedTiles,melds,declaredPair,flowers,roundWind,seatWind,winMethod,isLastTile,isRobbingKong,isConcealedHand,isSingleWait,isAfterKong,isHeavenly,isEarthly}=input;
   const meldTiles=melds.flatMap(m=>m.tiles);
   const allTiles=[...concealedTiles,...meldTiles];
   let candidates=[];
@@ -368,7 +435,7 @@ function analyzeHand(input){
   if(melds.length===0 && !declaredPair && thirteenOrphans(allTiles))
     candidates.push({source:'13 Orphans',patterns:[{name:'13 Orphans',points:13,detail:'One of each terminal & honor tile, plus one duplicate.'}],groups:[],pair:null});
   if(melds.length===0 && !declaredPair && nineGates(concealedTiles))
-    candidates.push({source:'Nine Gates',patterns:[{name:'Nine Gates',points:15,detail:'Concealed 1112345678999 in one suit plus an extra tile of that suit.'}],groups:[],pair:null});
+    candidates.push({source:'Heavenly Gates',patterns:[{name:'Heavenly Gates',points:15,detail:'Has 1112345678999 in one suit plus one extra tile of that suit.'}],groups:[],pair:null});
   if(fourKongs(melds,concealedTiles))
     candidates.push({source:'Four Kongs',patterns:[{name:'Four Kongs',points:12,detail:'Four Kong melds plus a pair.'}],groups:meldsToGroups(melds),pair:concealedTiles[0]});
   const needed=4-melds.length;
@@ -378,13 +445,13 @@ function analyzeHand(input){
       for(const groups of solveGroups(sortTiles(remaining))){
         if(groups.length===needed){
           const allGroups=[...meldsToGroups(melds),...groups];
-          candidates.push({source:'Standard Hand',patterns:scoreStandard(allGroups,declaredPair[0],roundWind,seatWind),groups:allGroups,pair:declaredPair[0]});
+          candidates.push({source:'Standard Hand',patterns:scoreStandard(allGroups,declaredPair[0],roundWind,seatWind,isConcealedHand),groups:allGroups,pair:declaredPair[0]});
         }
       }
     } else {
       for(const d of enumerateDecomp(concealedTiles,needed)){
         const groups=[...meldsToGroups(melds),...d.groups];
-        candidates.push({source:'Standard Hand',patterns:scoreStandard(groups,d.pair,roundWind,seatWind),groups,pair:d.pair});
+        candidates.push({source:'Standard Hand',patterns:scoreStandard(groups,d.pair,roundWind,seatWind,isConcealedHand),groups,pair:d.pair});
       }
     }
   }
@@ -394,28 +461,51 @@ function analyzeHand(input){
   const additional=[];
   if(winMethod==='SELF_DRAW') additional.push({name:'Self Draw',points:1,detail:'The winning tile came from the wall.'});
   if(isLastTile) additional.push({name:'Last Tile',points:1,detail:'Won on the final live-wall tile.'});
-  if(winMethod==='DISCARD_WIN' && isConcealedHand) additional.push({name:'Concealed Hand',points:1,detail:'Marked as concealed — no exposed melds, and the win was on a discard.'});
-  if(isRobbingKong) additional.push({name:'Robbing the Kong',points:1,detail:'Won on the tile another player added to an exposed Pong to make a Kong.'});
-  const suitable=flowers.filter(f=>FLOWER_SEAT[f]===seatWind);
+  if(isConcealedHand) additional.push({name:'Concealed Hand',points:1,detail:'Marked as concealed — no exposed melds. Scores together with Self Draw when both apply.'});
+  if(isRobbingKong && winMethod!=='SELF_DRAW') additional.push({name:'Robbing the Kong',points:1,detail:'Won on the tile another player added to an exposed Pong to make a Kong.'});
+  const SEASON_SET=['FLW_SPRING','FLW_SUMMER','FLW_AUTUMN','FLW_WINTER'], FLOWER_SET=['FLW_PLUM','FLW_ORCHID','FLW_CHRYS','FLW_BAMBOO'];
+  const completeSets=[SEASON_SET,FLOWER_SET].filter(set=>set.every(k=>flowers.includes(k)));
+  // A complete set is worth its own points and absorbs your matching tile inside that set (not counted again);
+  // your matching tile in the other series still scores.
+  const suitable=flowers.filter(f=>FLOWER_SEAT[f]===seatWind && !completeSets.some(set=>set.includes(f)));
   if(suitable.length>0) additional.push({name:'Suitable Flower',points:suitable.length,detail:`${suitable.length} flower/season tile(s) matched this seat.`});
   if(flowers.length===0) additional.push({name:'No Flower',points:1,detail:'The hand was completed without drawing any Flower/Season.'});
+  // --- Combined house-rule additional points ---
+  const hasKongMeld=melds.some(m=>m.type==='KONG');
+  const setsOfFlowers=(['FLW_SPRING','FLW_SUMMER','FLW_AUTUMN','FLW_WINTER'].every(k=>flowers.includes(k))?1:0)+(['FLW_PLUM','FLW_ORCHID','FLW_CHRYS','FLW_BAMBOO'].every(k=>flowers.includes(k))?1:0);
+  if(setsOfFlowers===1) additional.push({name:'One Set of Flowers',points:2,detail:'All 4 Seasons, or all 4 Flowers.'});
+  if(setsOfFlowers===2) additional.push({name:'Two Sets of Flowers',points:8,detail:'All 4 Seasons and all 4 Flowers.'});
+  if(isSingleWait) additional.push({name:'Single Waiting Hand',points:1,detail:'The hand was waiting on only one possible tile.'});
+  if(isAfterKong && winMethod==='SELF_DRAW' && hasKongMeld) additional.push({name:'Self-Drawn After Kong',points:1,detail:'Won from the wall right after declaring a Kong.'});
+  if(winMethod==='DISCARD_WIN' && melds.length===4 && melds.every(m=>m.isExposed)) additional.push({name:'All From Others',points:2,detail:'All four sets were claimed from other players, and the win was on a discard.'});
+  if(isHeavenly && winMethod==='SELF_DRAW' && seatWind==='E' && !hasKongMeld) additional.push({name:'Heavenly Hand',points:10,detail:'The dealer won on the opening draw (no Kong).'});
+  if(isEarthly && winMethod==='DISCARD_WIN' && seatWind!=='E' && !hasKongMeld) additional.push({name:'Earthly Hand',points:10,detail:'Won on the very first discard of the game.'});
+  // Heavenly / Earthly Hand are 10-point hands that stand on their own: they replace Self Draw, Last Tile and No Flower (Earthly Hand also replaces Concealed Hand).
+  if(additional.some(p=>p.name==='Heavenly Hand'||p.name==='Earthly Hand')){
+    for(let i=additional.length-1;i>=0;i--) if(['Self Draw','Last Tile','No Flower',...(additional.some(p=>p.name==='Earthly Hand')?['Concealed Hand']:[])].includes(additional[i].name)) additional.splice(i,1);
+  }
   const additionalSum=additional.reduce((s,p)=>s+p.points,0);
-  // Tiles like 1,1,1,2,2,2,3,3,3 can genuinely be read as three Pongs OR three Chows — that's a real
+  // Tiles like 1,1,1,2,2,2,3,3,3 can genuinely be read as three Pongs OR three Chi — that's a real
   // ambiguity in Mahjong, not something the tiles alone resolve. So instead of silently assuming
   // whichever reading scores highest, collect every distinct valid reading and let the caller ask.
   const seen=new Set();
   const options=[];
+  // Hands that are concealed by nature (a pair / orphan / gate shape can't be claimed from a discard, and Four Hidden Pong already
+  // requires concealed sets) already contain the concealment, so they never take the extra Concealed Hand point.
+  const INHERENTLY_CONCEALED=['Seven Pairs','13 Orphans','Heavenly Gates','Four Hidden Pong'];
   for(const c of candidates){
     let detected=c.patterns.length?c.patterns:[{name:'Chicken Hand',points:0,detail:'A valid winning hand with no additional scoring pattern.'}];
-    const totalPoints=detected.reduce((s,p)=>s+p.points,0)+additionalSum;
+    const optAdditional=detected.some(p=>INHERENTLY_CONCEALED.includes(p.name))?additional.filter(p=>p.name!=='Concealed Hand'):additional;
+    const optAdditionalSum=optAdditional.reduce((s,p)=>s+p.points,0);
+    const totalPoints=detected.reduce((s,p)=>s+p.points,0)+optAdditionalSum;
     const sig=c.source+'|'+detected.map(p=>p.name+':'+p.points).sort().join(',');
     if(seen.has(sig)) continue;
     seen.add(sig);
-    options.push({structure:c.source,detectedPatterns:detected,totalPoints});
+    options.push({structure:c.source,detectedPatterns:detected,additionalPoints:optAdditional,totalPoints});
   }
   options.sort((a,b)=>b.totalPoints-a.totalPoints);
   if(options.length===1){
-    return {isWinningHand:true,handStructure:options[0].structure,detectedPatterns:options[0].detectedPatterns,additionalPoints:additional,totalPoints:options[0].totalPoints};
+    return {isWinningHand:true,handStructure:options[0].structure,detectedPatterns:options[0].detectedPatterns,additionalPoints:options[0].additionalPoints,totalPoints:options[0].totalPoints};
   }
   return {isWinningHand:true,needsChoice:true,additionalPoints:additional,options:options.slice(0,6)};
 }
@@ -429,13 +519,15 @@ function save(){try{localStorage.setItem('maje_state',JSON.stringify({games:S.ga
 
 /* ============================= STATE ============================= */
 const persisted=load();
-let S={finalPhotoDataUrl:null,view:'home',games:persisted.games,quickHands:persisted.quickHands,currentGameId:null,draft:null,lastResult:null,lastSettlement:null,winCtx:null,photoDataUrl:null};
+let S={finalPhotoDataUrl:null,view:'home',games:persisted.games,quickHands:persisted.quickHands,currentGameId:null,draft:null,lastResult:null,lastSettlement:null,winCtx:null,photoDataUrl:null,viewingHand:null,editingHand:null};
 
+const FLAG_KEYS=['isSingleWait','isAfterKong','isHeavenly','isEarthly'];
+function pickFlags(o){const r={};FLAG_KEYS.forEach(k=>r[k]=!!(o&&o[k]));return r;}
 function newDraft(){return {concealedTiles:[],groups:[],declaredPair:null,pendingSelection:[],flowers:[]};}
 
-function emptyGame(name,players,roundWind,dealerIdx){
+function emptyGame(name,players,roundWind,dealerIdx,limit){
   const scores={}; players.forEach(p=>scores[p.id]=0);
-  return {id:'g'+Date.now(),name:name||'',players,roundWind,dealerIdx,dealerTurnInRound:1,hands:[],scores,createdAt:new Date().toISOString()};
+  return {id:'g'+Date.now(),name:name||'',players,roundWind,dealerIdx,dealerTurnInRound:1,limit:limit||null,hands:[],scores,createdAt:new Date().toISOString()};
 }
 /** Final standings: sorted by score desc, ties share a rank. wins = hands won. */
 function computeStandings(g){
@@ -454,6 +546,9 @@ function seatWindOf(g,playerIndex){
   const winds=['E','S','W','N'];
   return winds[(playerIndex-g.dealerIdx+4)%4];
 }
+/** While editing a past hand, scoring must use the round wind and dealer that applied WHEN that hand was played,
+ *  not the game's current dealer/round. Returns the game itself unless an edit is in progress. */
+function ctxG(g){ return (S.editingHand && S.editingHand.gid===g.id) ? S.editingHand.ctx : g; }
 /** After a hand is recorded, rotate the dealer/round wind per standard Mahjong rules:
  *  winning dealer stays; a non-dealer win passes the dealer to the next player (counterclockwise).
  *  Once all 4 players have held the dealer seat in the current round wind, the round wind advances. */
@@ -468,7 +563,7 @@ function advanceDealerAndRound(g,winnerId){
     g.dealerTurnInRound=1;
   }
 }
-/** Commit a chosen scoring interpretation (there's only ever one to choose from unless the tiles were genuinely ambiguous, e.g. 123+123+123 read as Chows vs Pongs). */
+/** Commit a chosen scoring interpretation (there's only ever one to choose from unless the tiles were genuinely ambiguous, e.g. 123+123+123 read as Chi vs Pongs). */
 function finalizeResult(mode,resObj){
   S.lastResult={isWinningHand:true,handStructure:resObj.handStructure,detectedPatterns:resObj.detectedPatterns,additionalPoints:resObj.additionalPoints,totalPoints:resObj.totalPoints};
   S.resultMode=mode; S.photoDataUrl=null; S.pendingChoice=null;
@@ -476,11 +571,14 @@ function finalizeResult(mode,resObj){
     const g=S.games.find(x=>x.id===S.currentGameId);
     const winner=g.players.find(p=>p.id===S.winCtx.winnerId);
     const others=g.players.filter(p=>p.id!==winner.id);
+    // Point limit (optional, set when the game was created): a hand never pays more than the limit.
+    const pts=g.limit?Math.min(resObj.totalPoints,g.limit):resObj.totalPoints;
+    S.lastResult.cappedPoints=pts;
     let settlement={};
     // Self Draw: each of the 3 other players pays the full hand points (winner receives points x 3).
     // Discard Win: only the discarder pays, and pays DOUBLE (winner receives points x 2); the other two pay nothing.
-    if(S.winCtx.winMethod==='SELF_DRAW'){settlement[winner.id]=resObj.totalPoints*3;others.forEach(p=>settlement[p.id]=-resObj.totalPoints);}
-    else{settlement[winner.id]=resObj.totalPoints*2;others.forEach(p=>settlement[p.id]=p.id===S.winCtx.discardedBy?-resObj.totalPoints*2:0);}
+    if(S.winCtx.winMethod==='SELF_DRAW'){settlement[winner.id]=pts*3;others.forEach(p=>settlement[p.id]=-pts);}
+    else{settlement[winner.id]=pts*2;others.forEach(p=>settlement[p.id]=p.id===S.winCtx.discardedBy?-pts*2:0);}
     S.lastSettlement=settlement;
   } else {
     S.lastSettlement=null;
@@ -505,7 +603,7 @@ const I18N = {
     'Record Win':'Catat Kemenangan', 'Hand History':'Riwayat Hand',
     'No hands recorded yet.':'Belum ada hand yang dicatat.',
     'Group Your Tiles':'Kelompokkan Tile Anda',
-    'Optional — tag which tiles form each Chi/Pong/Kong and the pair yourself, so there\'s no guesswork (e.g. 1-1-1-2-2-2-3-3-3 could be Pongs or Chows — this settles it).':'Opsional — tandai tile yang membentuk Chi/Pong/Kong dan pair sendiri agar tidak ada salah tafsir.',
+    'Optional — tag which tiles form each Chi/Pong/Kong and the pair yourself, so there\'s no guesswork (e.g. 1-1-1-2-2-2-3-3-3 could be Pongs or Chi — this settles it).':'Opsional — tandai tile yang membentuk Chi/Pong/Kong dan pair sendiri agar tidak ada salah tafsir.',
     'Tap tiles below to select a set, then tag it:':'Ketuk tile di bawah untuk memilih set, lalu tandai:',
     'Nothing selected yet.':'Belum ada yang dipilih.',
     'No more ungrouped tiles — add more in Your Hand above, or ungroup something.':'Tidak ada tile yang belum dikelompokkan — tambahkan di Hand Anda atau lepaskan kelompok.',
@@ -536,12 +634,12 @@ const I18N = {
     'This photo appears on your shareable card. Skip it to use the digital tile layout instead.':'Foto ini akan muncul di kartu yang bisa dibagikan. Lewati untuk memakai susunan tile digital.',
     'Save Image':'Simpan Gambar', 'Share':'Bagikan',
     'Confirm Result':'Konfirmasi Hasil', 'Save to History':'Simpan ke Riwayat',
-    'Edit Hand':'Edit Hand', 'Nothing here yet.':'Belum ada apa-apa di sini.',
+    'Edit Hand':'Edit Hand', 'Undo Last Hand':'Batalkan Hand Terakhir', 'Nothing here yet.':'Belum ada apa-apa di sini.',
     'Round: ':'Putaran: ', 'Dealer: ':'Dealer: ', 'Seat':'Kursi',
     'POINTS':'POIN', 'PAYMENT':'PEMBAYARAN', 'TILES':'TILE',
     'Chi':'Chi', 'Pong':'Pong', 'Kong':'Kong', 'Pair':'Pair',
     'PAIR':'PAIR', 'No Flower':'Tanpa Bunga', 'Suitable Flower':'Bunga yang Sesuai',
-    'Pure Straight':'Straight Murni', 'All Chows':'Semua Chi', 'All Pongs':'Semua Pong',
+    'Pure Straight':'Straight Murni', 'All Chi':'Semua Chi', 'All Pongs':'Semua Pong',
     'All Simples':'Semua Angka Tengah', 'Full Flush':'Satu Jenis', 'Half Flush':'Campuran Satu Jenis',
     'Mixed Orphans':'Orphan Campuran', 'Pure Orphans':'Orphan Murni', 'All Honor':'Semua Honor',
     'Dragon':'Naga', 'Little Dragon':'Naga Kecil', 'Great Dragon':'Naga Besar',
@@ -552,8 +650,14 @@ const I18N = {
     'This photo becomes the background of your story card. Skip it to use the clean leaderboard layout.':'Foto ini jadi latar kartu story Anda. Lewati untuk memakai tampilan papan peringkat polos.',
     'Back to Game':'Kembali ke Permainan', 'Done':'Selesai', 'FINISHED':'SELESAI', 'Add at least one hand before finishing the game.':'Catat minimal satu hand sebelum menyelesaikan permainan.',
     'Round Wind':'Angin Putaran', 'Seven Pairs':'Tujuh Pair', '13 Orphans':'13 Orphan',
-    'Nine Gates':'Nine Gates', 'Four Kongs':'Empat Kong', 'Chicken Hand':'Chicken Hand',
-    'Last Tile':'Tile Terakhir', 'Robbing the Kong':'Merampas Kong', 'Concealed Hand':'Hand Tertutup'
+    'Heavenly Gates':'Heavenly Gates', 'Four Kongs':'Empat Kong', 'Chicken Hand':'Chicken Hand',
+    'Last Tile':'Tile Terakhir', 'Robbing the Kong':'Merampas Kong', 'Concealed Hand':'Hand Tertutup',
+    'Lacking a Suit':'Kurang Satu Jenis', '2-5-8 Eye':'Pair 2-5-8', 'All One or Nine':'Semua Satu atau Sembilan',
+    'Three Suits + Winds & Dragons':'Tiga Jenis + Angin & Naga', 'Double Chi':'Chi Kembar', 'Two Double Chi':'Dua Chi Kembar',
+    'Three Sequence Pong':'Tiga Pong Berurutan', 'Four Sequence Pong':'Empat Pong Berurutan', 'Three Hidden Pong':'Tiga Pong Tersembunyi', 'Four Hidden Pong':'Empat Pong Tersembunyi',
+    'Three Suits Pong':'Pong Tiga Jenis', 'Three Suits Chi':'Chi Tiga Jenis', 'Four in One':'Empat dalam Satu', 'Min-Max Chi':'Chi Min-Max', 'Min-Max Pong':'Pong Min-Max',
+    'One Set of Flowers':'Satu Set Bunga', 'Two Sets of Flowers':'Dua Set Bunga', 'Single Waiting Hand':'Menunggu Satu Tile', 'Self-Drawn After Kong':'Self Draw Setelah Kong',
+    'All From Others':'Semua dari Pemain Lain', 'Heavenly Hand':'Heavenly Hand', 'Earthly Hand':'Earthly Hand'
   }
 };
 
@@ -666,6 +770,26 @@ function viewNewGame(){
       ${d.players.map((p,i)=>`<button class="btn ${d.dealerIdx===i?'btn-primary':'btn-ghost'} sans !p-2 !min-h-[44px] text-sm" onclick="app.act('SET_DEALER',${i})">${p||'Player '+(i+1)}</button>`).join('')}
       </div>
     </div>
+    <div>
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <div class="section-title !mb-0">${L('Point Limit','Batas Poin')}</div>
+          <div class="sans text-xs text-[#8a5a63] mt-1">${L('Cap the points of a single hand. Anything above the limit is counted as the limit.','Batasi poin satu hand. Poin di atas batas dihitung sebagai batas.')}</div>
+        </div>
+        <button type="button" role="switch" aria-checked="${d.limitOn?'true':'false'}" onclick="app.act('TOGGLE_LIMIT')" style="flex:none;width:52px;height:30px;border-radius:999px;border:0;position:relative;cursor:pointer;background:${d.limitOn?'#5B0015':'#E4D6D6'};transition:background .15s;">
+          <span style="position:absolute;top:3px;left:${d.limitOn?'25px':'3px'};width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .15s;"></span>
+        </button>
+      </div>
+      ${d.limitOn?`<div class="card mt-3">
+        <div class="flex items-center justify-center gap-4">
+          <button class="btn btn-ghost sans !w-12 !min-h-[44px] !p-0 text-xl" onclick="app.act('LIMIT_STEP',-1)">−</button>
+          <div class="text-center"><div class="text-3xl font-bold">${d.limitVal}</div><div class="sans text-xs text-[#8a5a63]">${L('points','poin')}</div></div>
+          <button class="btn btn-ghost sans !w-12 !min-h-[44px] !p-0 text-xl" onclick="app.act('LIMIT_STEP',1)">+</button>
+        </div>
+        <div class="grid grid-cols-4 gap-2 mt-3">${[10,13,15,20].map(n=>`<button class="btn ${d.limitVal===n?'btn-primary':'btn-ghost'} sans !p-2 !min-h-[40px] text-sm" onclick="app.act('SET_LIMIT',${n})">${n}</button>`).join('')}</div>
+        <div class="sans text-xs text-[#8a5a63] mt-2">${L('Minimum 10. The limit applies to the hand points before the Self Draw (×3 total) or Discard Win (×2) payment.','Minimum 10. Batas berlaku pada poin hand sebelum pembayaran Self Draw (total ×3) atau Menang dari Buangan (×2).')}</div>
+      </div>`:''}
+    </div>
     <button class="btn btn-primary sans mt-2" onclick="app.act('START_GAME')">Start Game</button>
   </div>`;
 }
@@ -682,7 +806,7 @@ function viewGame(){
   <div class="px-5 flex items-start justify-between">
     <div>
       <div class="text-xl font-bold">Track ⓘ${g.finishedAt?'<span class="badge-done">FINISHED</span>':''}</div>
-      <div class="sans text-xs text-[#8a5a63] mt-1">Hand ${g.hands.length+1}</div>
+      <div class="sans text-xs text-[#8a5a63] mt-1">Hand ${g.hands.length+1}${g.limit?` · ${L('Limit','Batas')} ${g.limit} ${L('pts','poin')}`:''}</div>
     </div>
     <div class="text-center">
       <div class="w-14 h-14 rounded-full bg-[#5B0015] text-white flex items-center justify-center mx-auto" style="font-family:'Segoe UI Symbol','Noto Sans Symbols2',sans-serif;font-size:22px;">${TILE_GLYPH['WIND_'+g.roundWind]||''}</div>
@@ -710,11 +834,22 @@ function viewGame(){
     <button class="btn btn-secondary sans mt-3" onclick="app.act('GO_FINISH')">🏁 ${g.finishedAt?'View Final Result':'Finish Game'}</button>
   </div>
   <div class="px-5 mt-6">
-    <div class="section-title">Hand History</div>
+    <div class="flex items-center justify-between mb-2">
+      <div class="section-title !mb-0">Hand History</div>
+      ${g.hands.length?`<button class="sans text-xs font-bold rounded-full px-3 py-1.5 border border-[#5B0015] text-[#5B0015] bg-white" onclick="app.act('UNDO_LAST_HAND')">↩ Undo Last Hand</button>`:''}
+    </div>
+    ${(S.undoPending===g.id&&g.hands.length)?`<div class="card mb-3 !border-[#5B0015] !border-2">
+      <div class="sans text-sm font-bold">Undo Hand ${String(g.hands.length).padStart(2,'0')} (won by ${(g.players.find(p=>p.id===g.hands[g.hands.length-1].winnerId)||{}).name||'?'})?</div>
+      <div class="sans text-xs text-[#8a5a63] mt-1">This deletes the hand from history, takes back its points, and puts the dealer and round wind back as they were before this hand.</div>
+      <div class="grid grid-cols-2 gap-2 mt-3">
+        <button class="btn btn-ghost sans !min-h-[44px] text-sm" onclick="app.act('UNDO_CANCEL')">Cancel</button>
+        <button class="btn btn-primary sans !min-h-[44px] text-sm" onclick="app.act('UNDO_CONFIRM')">Yes, undo</button>
+      </div>
+    </div>`:''}
     <div class="flex flex-col gap-2">
     ${g.hands.length===0?`<div class="sans text-sm text-[#8a5a63]">No hands recorded yet.</div>`:''}
     ${g.hands.map((hd,i)=>`<div class="card cursor-pointer" onclick="app.act('VIEW_HAND',{gid:'${g.id}',idx:${i}})">
-      <div class="flex justify-between sans"><span class="font-semibold text-sm">Hand ${String(i+1).padStart(2,'0')} — ${g.players.find(p=>p.id===hd.winnerId)?.name}</span><span class="font-bold text-sm">${hd.totalPoints} pts</span></div>
+      <div class="flex justify-between sans"><span class="font-semibold text-sm">Hand ${String(i+1).padStart(2,'0')} — ${g.players.find(p=>p.id===hd.winnerId)?.name}${hd.editedAt?' <span class="text-xs font-normal text-[#8a5a63]">✏️ edited</span>':''}</span><span class="font-bold text-sm">${(hd.paidPoints!=null&&hd.paidPoints<hd.totalPoints)?`${hd.totalPoints} → ${hd.paidPoints}`:hd.totalPoints} pts</span></div>
       <div class="sans text-xs text-[#8a5a63] mt-1">${hd.scoringPatterns.map(p=>p.name).join(' + ')} · ${windName(hd.roundWind)} round</div>
     </div>`).join('')}
     </div>
@@ -727,10 +862,11 @@ function groupBuilderHtml(draft){
   const types=[['CHI','Chi'],['PONG','Pong'],['KONG','Kong'],['PAIR','Pair']];
   return `<div>
     <div class="section-title mt-4">Group Your Tiles</div>
-    <div class="sans text-xs text-[#8a5a63] mb-2">Optional — tag which tiles form each Chi/Pong/Kong and the pair yourself, so there's no guesswork (e.g. 1-1-1-2-2-2-3-3-3 could be Pongs or Chows — this settles it).</div>
+    <div class="sans text-xs text-[#8a5a63] mb-2">Optional — tag which tiles form each Chi/Pong/Kong and the pair yourself, so there's no guesswork (e.g. 1-1-1-2-2-2-3-3-3 could be Pongs or Chi — this settles it). Sets are treated as open by default. Hidden Pong only scores when <b>Concealed Hand</b> is ticked; tap <b>Hidden</b> to mark a set as <b>Open</b> when it was claimed from a discard (also needed for All From Others).</div>
     ${(draft.groups.length||draft.declaredPair)?`<div class="flex flex-wrap gap-2 mb-2">
       ${draft.groups.map((g,i)=>`<div class="card !p-2 flex items-center gap-1">
         <span class="sans text-xs font-bold">${g.type}</span>
+        <button class="sans text-[10px] font-bold rounded-full px-2 py-0.5 border ${g.isExposed?'bg-[#5B0015] text-white border-[#5B0015]':'text-[#5B0015] border-[#E4D6D6] bg-white'}" onclick="app.act('TOGGLE_GROUP_EXPOSED',${i})">${g.isExposed?'Open':'Hidden'}</button>
         <div class="flex gap-0.5 ml-1">${g.tiles.map(t=>`<div class="tile mini">${tileShort(t)}</div>`).join('')}</div>
         <button class="sans text-xs text-red-700 ml-1" onclick="app.act('REMOVE_GROUP',${i})">✕</button>
       </div>`).join('')}
@@ -793,15 +929,43 @@ function tilePickerHtml(draft,opts){
   `;
 }
 
+function flagCheckboxHtml(ctx,key,label,enabled,hint){
+  return `<label class="sans text-sm flex items-center gap-2 mb-1 ${enabled?'':'opacity-40'}"><input type="checkbox" ${(ctx[key]&&enabled)?'checked':''} ${enabled?'':'disabled'} onchange="app.act('TOGGLE_FLAG','${key}')"> ${label}${enabled?'':` <span class="text-xs">(${hint})</span>`}</label>`;
+}
+function extraConditionsHtml(ctx){
+  const sd=ctx.winMethod==='SELF_DRAW';
+  // Heavenly Hand / Earthly Hand checkboxes are hidden from the UI for now (still scored by the engine for old saved hands, and still in the guidebook).
+  return flagCheckboxHtml(ctx,'isSingleWait','Single Waiting Hand',true,'')
+    + flagCheckboxHtml(ctx,'isAfterKong','Self-Drawn After Kong',sd,'self draw only');
+}
 function robbingKongCheckboxHtml(ctx){
-  return `<label class="sans text-sm flex items-center gap-2 mb-1 pb-3"><input type="checkbox" ${ctx.isRobbingKong?'checked':''} onchange="app.act('TOGGLE_ROBBING_KONG')"> Robbing the Kong</label>`;
+  const disabled=ctx.winMethod==='SELF_DRAW'; // robbing a Kong means the tile came from another player, so it can't be a Self Draw
+  return `<label class="sans text-sm flex items-center gap-2 mb-1 pb-3 ${disabled?'opacity-40':''}"><input type="checkbox" ${(ctx.isRobbingKong&&!disabled)?'checked':''} ${disabled?'disabled':''} onchange="app.act('TOGGLE_ROBBING_KONG')"> Robbing the Kong${disabled?' <span class="text-xs">(discard win only)</span>':''}</label>`;
 }
 function concealedHandCheckboxHtml(ctx){
-  const disabled=ctx.winMethod==='SELF_DRAW';
-  return `<label class="sans text-sm flex items-center gap-2 mb-1 ${disabled?'opacity-40':''}">
-    <input type="checkbox" ${ctx.isConcealedHand?'checked':''} ${disabled?'disabled':''} onchange="app.act('TOGGLE_CONCEALED')">
-    Concealed Hand${disabled?' (not applicable on Self Draw)':' — no exposed melds, won on discard'}
+  return `<label class="sans text-sm flex items-center gap-2 mb-1">
+    <input type="checkbox" ${ctx.isConcealedHand?'checked':''} onchange="app.act('TOGGLE_CONCEALED')">
+    Concealed Hand — no exposed melds
   </label>`;
+}
+/** Edit-only block: change winner / win method / discarder of a saved hand. */
+function editHandDetailsHtml(g,ctx){
+  const e=S.editingHand, hd=g.hands[e.idx];
+  const dealerId=g.players[e.ctx.dealerIdx].id;
+  const wasDealerWin=hd.winnerId===dealerId;
+  // On older hands the winner can't switch between dealer and non-dealer (it would change later dealer rotation).
+  const winners=e.isLast?g.players:g.players.filter(p=>(p.id===dealerId)===wasDealerWin);
+  const btn=(on,act,id,label)=>`<button class="btn ${on?'btn-primary':'btn-ghost'} sans !p-2 !min-h-[44px] text-sm" onclick="app.act('${act}','${id}')">${label}</button>`;
+  return `<div class="card mb-3">
+    <div class="sans text-xs text-[#8a5a63] mb-2">✏️ Editing Hand ${String(e.idx+1).padStart(2,'0')} · ${windName(e.ctx.roundWind)} round · Dealer: ${g.players[e.ctx.dealerIdx].name}</div>
+    <div class="section-title">Winner</div>
+    <div class="grid grid-cols-2 gap-2 mb-1">${winners.map(p=>btn(ctx.winnerId===p.id,'EDIT_SET_WINNER',p.id,p.name)).join('')}</div>
+    ${e.isLast?'':`<div class="sans text-[11px] text-[#8a5a63] mb-2">Switching between dealer and non-dealer winner is only possible on the latest hand.</div>`}
+    <div class="section-title mt-2">Win Method</div>
+    <div class="grid grid-cols-2 gap-2 mb-1"><button class="btn ${ctx.winMethod==='SELF_DRAW'?'btn-primary':'btn-ghost'} sans !p-2 !min-h-[44px] text-sm ${ctx.isRobbingKong?'opacity-40':''}" ${ctx.isRobbingKong?'disabled':''} onclick="app.act('EDIT_SET_METHOD','SELF_DRAW')">Self Draw</button>${btn(ctx.winMethod==='DISCARD_WIN','EDIT_SET_METHOD','DISCARD_WIN','Discard Win')}</div>
+    ${ctx.winMethod==='DISCARD_WIN'?`<div class="section-title mt-2">Discarded by</div>
+    <div class="grid grid-cols-3 gap-2">${g.players.filter(p=>p.id!==ctx.winnerId).map(p=>btn(ctx.discardedBy===p.id,'EDIT_SET_DISCARDER',p.id,p.name)).join('')}</div>`:''}
+  </div>`;
 }
 function viewRecordWin(){
   const g=S.games.find(x=>x.id===S.currentGameId);
@@ -811,7 +975,7 @@ function viewRecordWin(){
     <div class="px-5 pt-10 pb-4"><button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_GAME')">← Cancel</button>
     <div class="text-2xl font-bold mt-3">Who Won?</div></div>
     <div class="px-5 grid grid-cols-2 gap-3">
-    ${g.players.map((p,i)=>`<button class="btn btn-ghost sans" onclick="app.act('PICK_WINNER','${p.id}')">${p.name}<br><span class="text-xs">${windName(seatWindOf(g,i))}</span></button>`).join('')}
+    ${g.players.map((p,i)=>`<button class="btn btn-ghost sans" onclick="app.act('PICK_WINNER','${p.id}')">${p.name}<br><span class="text-xs">${windName(seatWindOf(ctxG(g),i))}</span></button>`).join('')}
     </div>`;
   }
   if(!ctx.winMethod){
@@ -836,10 +1000,12 @@ function viewRecordWin(){
   <div class="text-2xl font-bold mt-3">Enter Winning Hand</div>
   <div class="sans text-xs text-[#8a5a63] mt-1">Winner: ${g.players.find(p=>p.id===ctx.winnerId).name} · ${ctx.winMethod==='SELF_DRAW'?'Self Draw':'Discard Win from '+g.players.find(p=>p.id===ctx.discardedBy)?.name}</div></div>
   <div class="px-5">
+    ${S.editingHand?editHandDetailsHtml(g,ctx):''}
     ${tilePickerHtml(S.draft)}
     <div class="section-title mt-4">Additional Conditions</div>
     <label class="sans text-sm flex items-center gap-2 mb-1"><input type="checkbox" ${ctx.isLastTile?'checked':''} onchange="app.act('TOGGLE_LAST_TILE')"> Last Tile</label>
     ${concealedHandCheckboxHtml(ctx)}
+    ${extraConditionsHtml(S.winCtx)}
     ${robbingKongCheckboxHtml(S.winCtx)}
     <button class="btn btn-primary sans mt-2" onclick="app.act('ANALYZE_GAME')">Analyze Hand</button>
   </div>`;
@@ -854,11 +1020,12 @@ function viewQuick(){
     ${tilePickerHtml(S.draft)}
     <div class="section-title mt-4">Win Method (optional)</div>
     <div class="grid grid-cols-2 gap-2 mb-2">
-      <button class="btn ${ctx.winMethod==='SELF_DRAW'?'btn-primary':'btn-ghost'} sans !min-h-[44px] text-sm" onclick="app.act('QSET','winMethod','SELF_DRAW')">Self Draw</button>
+      <button class="btn ${ctx.winMethod==='SELF_DRAW'?'btn-primary':'btn-ghost'} sans !min-h-[44px] text-sm ${ctx.isRobbingKong?'opacity-40':''}" ${ctx.isRobbingKong?'disabled':''} onclick="app.act('QSET','winMethod','SELF_DRAW')">Self Draw</button>
       <button class="btn ${ctx.winMethod==='DISCARD_WIN'?'btn-primary':'btn-ghost'} sans !min-h-[44px] text-sm" onclick="app.act('QSET','winMethod','DISCARD_WIN')">Discard Win</button>
     </div>
     <label class="sans text-sm flex items-center gap-2 mb-1"><input type="checkbox" ${ctx.isLastTile?'checked':''} onchange="app.act('TOGGLE_LAST_TILE')"> Last Tile</label>
     ${concealedHandCheckboxHtml(ctx)}
+    ${extraConditionsHtml(S.winCtx)}
     ${robbingKongCheckboxHtml(S.winCtx)}
     <div class="section-title">Seat Wind (optional)</div>
     <div class="grid grid-cols-4 gap-2 mb-2">${[['E',1],['S',2],['W',3],['N',4]].map(([w,n])=>`<button class="btn ${ctx.seatWind===w?'btn-primary':'btn-ghost'} sans !p-2 !min-h-[40px] text-xs" onclick="app.act('QSET','seatWind','${w}')">${w} (${n})</button>`).join('')}</div>
@@ -899,6 +1066,19 @@ function viewResult(){
   const resultSeatWind = winner ? seatWindOf(g,g.players.findIndex(p=>p.id===winner.id)) : S.winCtx.seatWind;
   const resultWinLabel = S.winCtx.winMethod==='SELF_DRAW' ? 'Self Draw' : S.winCtx.winMethod==='DISCARD_WIN' ? 'Discard Win' : '';
   const resultMeta = [resultWinLabel, resultSeatWind ? `${windName(resultSeatWind)} Seat` : ''].filter(Boolean).join(' · ');
+  const viewingSaved = !!S.viewingHand && mode==='game';   // opened from Hand History: read-only
+  const editingSaved = !!S.editingHand && mode==='game';   // editing a past hand
+  let editImpactHtml='';
+  if(editingSaved && settlement && g){
+    const hdOld=g.hands[S.editingHand.idx];
+    editImpactHtml=`<div class=\"card mt-4 pop\">
+      <div class=\"section-title\">Live score after this edit</div>
+      ${g.players.map(p=>{
+        const before=g.scores[p.id]||0, after=before-((hdOld.settlement&&hdOld.settlement[p.id])||0)+(settlement[p.id]||0), d=after-before;
+        return `<div class=\"flex justify-between sans text-sm py-1\"><span>${p.name}</span><span><span class=\"text-[#8a5a63]\">${before} →</span> <b>${after}</b> <span class=\"text-xs\" style=\"color:${d>=0?'#5B0015':'#a33'}\">(${d>=0?'+':''}${d})</span></span></div>`;
+      }).join('')}
+    </div>`;
+  }
   const resultTiles = sortTiles([...(S.draft?.concealedTiles||[])]); // groups & pair reference concealedTiles, so don't add them again
   return h`
   <div class="px-5 pt-10 pb-6">
@@ -906,6 +1086,7 @@ function viewResult(){
     <div class="text-center pop">
       <div class="text-5xl font-bold">${r.totalPoints}</div>
       <div class="sans text-xs uppercase tracking-widest text-[#8a5a63] mt-1">POINTS</div>
+      ${(mode==='game' && r.cappedPoints!=null && r.cappedPoints<r.totalPoints)?`<div class="sans text-sm font-semibold mt-2" style="color:#5B0015">${L('Limit reached — counted as','Batas tercapai — dihitung sebagai')} ${r.cappedPoints} ${L('pts','poin')}</div>`:''}
       ${resultMeta?`<div class="sans text-sm text-[#8a5a63] mt-2">${resultMeta}</div>`:''}
     </div>
 
@@ -941,10 +1122,16 @@ function viewResult(){
       <button class="btn btn-ghost sans !min-h-[44px] text-sm flex-1" onclick="app.saveCardImage()">💾 Save Image</button>
       <button class="btn btn-primary sans !min-h-[44px] text-sm flex-1" onclick="app.shareCardImage()">📤 Share</button>
     </div>
+    ${editImpactHtml}
     <div class="flex flex-col gap-2 mt-5">
-    ${mode==='game'?`<button class="btn btn-primary sans" onclick="app.act('CONFIRM_RESULT')">Confirm Result</button>`:
-      `<button class="btn btn-primary sans" onclick="app.act('SAVE_QUICK')">Save to History</button>`}
+    ${viewingSaved?`<button class="btn btn-primary sans" onclick="app.act('START_EDIT_HAND')">✏️ Edit This Hand</button>
+      <button class="btn btn-secondary sans" onclick="app.act('GO_GAME')">← Back to Game</button>`
+    :editingSaved?`<button class="btn btn-primary sans" onclick="app.act('CONFIRM_EDIT')">Save Changes</button>
       <button class="btn btn-secondary sans" onclick="app.act('BACK_TO_BUILDER')">← Edit Hand</button>
+      <button class="btn btn-ghost sans" onclick="app.act('CANCEL_EDIT')">Cancel Edit</button>`
+    :`${mode==='game'?`<button class="btn btn-primary sans" onclick="app.act('CONFIRM_RESULT')">Confirm Result</button>`:
+      `<button class="btn btn-primary sans" onclick="app.act('SAVE_QUICK')">Save to History</button>`}
+      <button class="btn btn-secondary sans" onclick="app.act('BACK_TO_BUILDER')">← Edit Hand</button>`}
     </div>
   </div>`;
 }
@@ -1009,13 +1196,13 @@ const RULES={
       ex:[[_x('WIND_E',3),'/',_x('WIND_S',3),'/',_x('WIND_W',3),'/',_x('WIND_N',3)]]},
     {n:['Dragon','Naga'],pt:1,d:['Each Dragon Pong/Kong. Multiple dragon sets add up.','Setiap Pong/Kong Naga. Beberapa set naga poinnya ditambahkan.'],
       ex:[[_x('DRAG_R',3),'/',_x('DRAG_G',3),'/',_x('DRAG_W',3)]]},
-    {n:['Sequence Hand / All Chows','Sequence Hand / Semua Chi'],pt:1,d:['All 4 sets are Chows; pair is a simple tile.','Keempat set adalah Chi; pair berupa tile angka tengah (simple).'],
+    {n:['Sequence Hand / All Chi','Sequence Hand / Semua Chi'],pt:1,d:['Combinations of 4 Chi and 1 pair.','Kombinasi 4 Chi dan 1 pair.'],
       ex:[[_run('BAM',1,3),_run('BAM',4,6),_run('DOT',2,4),_run('CHR',7,9),_x('DOT5',2)]]},
     {n:['No Orphan / All Simples','Tanpa Orphan / Semua Angka Tengah'],pt:1,d:['Only 2-8. No 1, 9 or honors.','Hanya angka 2-8. Tanpa 1, 9, atau honor.'],
       ex:[[_run('DOT',2,4),_run('BAM',4,6),_run('CHR',5,7),_run('DOT',3,5),_x('BAM5',2)]]},
     {n:['Pure Straight','Straight Murni'],pt:3,d:['1-9 in one suit, made as 123 + 456 + 789.','1-9 dalam satu jenis, dibuat sebagai 123 + 456 + 789.'],
       ex:[[_run('BAM',1,9),_x('?',5)]]},
-    {n:['All Pongs','Semua Pong'],pt:3,d:['All 4 sets are Pongs/Kongs; no Chows.','Keempat set adalah Pong/Kong; tanpa Chi.'],
+    {n:['All Pongs','Semua Pong'],pt:3,d:['All 4 sets are Pongs/Kongs; no Chi.','Keempat set adalah Pong/Kong; tanpa Chi.'],
       ex:[[_x('DOT5',3),_x('CHR2',3),_x('BAM6',3),_x('DRAG_R',3),_x('WIND_E',2)]]},
     {n:['Mix Orphans','Orphan Campuran'],pt:3,d:['All combinations contain a 1, 9 or honor.','Semua kombinasi memuat 1, 9, atau honor.'],
       ex:[[_run('DOT',1,3),_run('BAM',1,3),_run('DOT',7,9),_x('WIND_E',3),_x('DRAG_G',2)]]},
@@ -1024,7 +1211,29 @@ const RULES={
     {n:['Half Flush','Campuran Satu Jenis (Half Flush)'],pt:3,d:['One suit + any Winds/Dragons.','Satu jenis + Angin/Naga apa pun.'],
       ex:[[_run('BAM',1,3),_x('BAM6',3),_x('BAM8',3),_x('WIND_S',3),_x('DRAG_G',2)]]},
     {n:['Full Flush','Satu Jenis (Full Flush)'],pt:7,d:['One suit only. No honors.','Hanya satu jenis. Tanpa honor.'],
-      ex:[[_run('DOT',1,3),_run('DOT',4,6),_run('DOT',7,9),_x('DOT9',3),_x('DOT5',2)]]}
+      ex:[[_run('DOT',1,3),_run('DOT',4,6),_run('DOT',7,9),_x('DOT9',3),_x('DOT5',2)]]},
+    {n:['Lacking a Suit','Kurang Satu Jenis'],pt:1,lb:['new6','new18'],d:['Two suits only, with no Winds or Dragons.','Hanya dua jenis, tanpa Angin atau Naga.'],
+      ex:[[_run('CHR',1,3),_run('CHR',4,6),_x('BAM3',3),_run('BAM',6,8),_x('BAM9',2)]]},
+    {n:['2-5-8 Eye','Pair 2-5-8'],pt:1,lb:['new6','new18'],d:['The pair is a 2, 5 or 8 of a suit.','Pair-nya adalah 2, 5, atau 8 dari satu jenis.'],
+      ex:[[_run('DOT',1,3),_run('BAM',4,6),_x('CHR7',3),_x('WIND_E',3),_x('DOT5',2)]]},
+    {n:['Three Suits + Winds & Dragons','Tiga Jenis + Angin & Naga'],pt:1,lb:['new18'],d:['All three suits, plus at least one Wind and one Dragon.','Ketiga jenis, ditambah minimal satu Angin dan satu Naga.'],
+      ex:[[_run('CHR',1,3),_run('BAM',4,6),_x('DOT7',3),_x('WIND_S',3),_x('DRAG_R',2)]]},
+    {n:['Double Chi','Chi Kembar'],pt:1,lb:['new18'],d:['Two identical Chi in the same suit.','Dua Chi yang sama persis dalam satu jenis.'],
+      ex:[[_run('CHR',2,4),_run('CHR',2,4)]]},
+    {n:['Three Sequence Pong','Tiga Pong Berurutan'],pt:2,lb:['new18'],d:['3 consecutive-number Pongs/Kongs in the same suit.','3 Pong/Kong berurutan dalam satu jenis.'],
+      ex:[[_x('BAM3',3),_x('BAM4',3),_x('BAM5',3)]]},
+    {n:['Three Hidden Pong','Tiga Pong Tersembunyi'],pt:2,lb:['new18'],d:['3 Pongs/Kongs made from your own concealed tiles. Only counts when Concealed Hand is chosen; otherwise the sets are treated as open. A set claimed from a discard does not count.','3 Pong/Kong dari tile tertutup Anda sendiri. Hanya dihitung jika Hand Tertutup dipilih; jika tidak, set dianggap terbuka. Set yang diambil dari buangan tidak dihitung.'],
+      ex:[[_x('CHR2',3),_x('BAM6',3),_x('DOT9',3)]]},
+    {n:['Three Suits Pong','Pong Tiga Jenis'],pt:3,lb:['new18'],d:['Pong/Kong of the same number in all three suits.','Pong/Kong dengan angka yang sama di ketiga jenis.'],
+      ex:[[_x('CHR5',3),_x('BAM5',3),_x('DOT5',3)]]},
+    {n:['Three Suits Chi','Chi Tiga Jenis'],pt:3,lb:['new18'],d:['Chi of the same numbers in all three suits.','Chi dengan angka yang sama di ketiga jenis.'],
+      ex:[[_run('CHR',4,6),_run('BAM',4,6),_run('DOT',4,6)]]},
+    {n:['Four in One','Empat dalam Satu'],pt:1,lb:['new18'],d:['All 4 copies of a tile used as a Pong plus one in a Chi (not a Kong). +1 for each such tile.','Keempat tile yang sama dipakai sebagai Pong ditambah satu di Chi (bukan Kong). +1 untuk setiap tile.'],
+      ex:[[_x('CHR4',3),_run('CHR',4,6)]]},
+    {n:['Min-Max Chi','Chi Min-Max'],pt:1,lb:['new18'],d:['Chi 123 and Chi 789 in the same suit. Not counted when the hand is already a Pure Straight.','Chi 123 dan Chi 789 dalam satu jenis. Tidak dihitung jika hand sudah Pure Straight.'],
+      ex:[[_run('CHR',1,3),_run('CHR',7,9)]]},
+    {n:['Min-Max Pong','Pong Min-Max'],pt:1,lb:['new18'],d:['Pong/Kong of 1 and Pong/Kong of 9 in the same suit.','Pong/Kong 1 dan Pong/Kong 9 dalam satu jenis.'],
+      ex:[[_x('CHR1',3),_x('CHR9',3)]]}
   ],
   bonus:[
     {n:['Robbing a Kong','Merampas Kong'],pt:1,d:['Taking the tile another player adds to a Pong to make a Kong.','Mengambil tile yang ditambahkan pemain lain ke Pong untuk membuat Kong.'],ex:[[_x('CHR2',4)]]},
@@ -1032,7 +1241,16 @@ const RULES={
     {n:['No Flower','Tanpa Bunga'],pt:1,d:['You finish the hand without drawing any flower/season.','Anda menyelesaikan hand tanpa pernah mengambil bunga/musim.']},
     {n:['Self Draw','Self Draw'],pt:1,d:['Winning tile comes from the wall.','Tile kemenangan berasal dari tembok.']},
     {n:['Last Tile','Tile Terakhir'],pt:1,d:['Win on the final live-wall tile (or final discard, if your table uses it).','Menang dengan tile terakhir dari tembok (atau buangan terakhir, jika meja Anda memakainya).']},
-    {n:['Concealed Hand','Hand Tertutup'],pt:1,d:['No exposed melds; win on a discard. A self-drawn win is scored as Self Draw instead.','Tanpa meld terbuka; menang dari buangan. Menang dari tembok dihitung sebagai Self Draw.']}
+    {n:['Concealed Hand','Hand Tertutup'],pt:1,d:['No exposed melds. Can be combined with Self Draw (both score). Not added on hands that are concealed by nature: Seven Pairs, 13 Orphans, Heavenly Gates and Four Hidden Pong.','Tanpa meld terbuka. Bisa digabung dengan Self Draw (keduanya dihitung). Tidak ditambahkan pada hand yang memang tertutup: 7 Pair, 13 Orphan, Heavenly Gates, dan Empat Pong Tersembunyi.']},
+    {n:['One Set of Flowers','Satu Set Bunga'],pt:2,lb:['classic','new6','new18'],d:['All 4 Seasons, or all 4 Flowers. Your own matching tile in that set is not counted again; your matching tile in the other series still scores.','Keempat Musim, atau keempat Bunga. Tile yang sesuai kursi Anda di set itu tidak dihitung lagi; tile yang sesuai di seri lainnya tetap dihitung.'],
+      ex:[[['FLW_SPRING','FLW_SUMMER','FLW_AUTUMN','FLW_WINTER']]]},
+    {n:['Two Sets of Flowers','Dua Set Bunga'],pt:8,lb:['classic','new6','new18'],d:['All 4 Seasons and all 4 Flowers.','Keempat Musim dan keempat Bunga.'],
+      ex:[[['FLW_SPRING','FLW_SUMMER','FLW_AUTUMN','FLW_WINTER'],['FLW_PLUM','FLW_ORCHID','FLW_CHRYS','FLW_BAMBOO']]]},
+    {n:['Single Waiting Hand','Menunggu Satu Tile'],pt:1,lb:['new6','new18'],d:['The hand was waiting on only one possible tile. Tick it yourself when entering the hand.','Hand hanya menunggu satu kemungkinan tile. Centang sendiri saat memasukkan hand.']},
+    {n:['Self-Drawn After Kong','Self Draw Setelah Kong'],pt:1,lb:['classic','new6','new18'],d:['Winning from the wall right after declaring a Kong (self draw only).','Menang dari tembok tepat setelah menyatakan Kong (hanya self draw).']},
+    {n:['All From Others','Semua dari Pemain Lain'],pt:2,lb:['new18'],d:['All four sets were claimed from other players (mark every set Open) and the win was on a discard.','Keempat set diambil dari pemain lain (tandai semua set Open) dan menang dari buangan.']},
+    {n:['Heavenly Hand','Heavenly Hand'],pt:10,lb:['classic','new6','new18'],d:['The dealer draws a winning hand at the very start of the game. No Kong allowed.','Dealer langsung mendapat winning hand di awal permainan. Tidak boleh ada Kong.']},
+    {n:['Earthly Hand','Earthly Hand'],pt:10,lb:['classic','new6','new18'],d:['A non-dealer completes a winning hand on the very first discard.','Pemain non-dealer menyelesaikan winning hand dengan buangan pertama.']}
   ],
   special:[
     {n:['Little Dragon','Naga Kecil'],pt:5,d:['2 Dragon Pongs/Kongs + pair of the 3rd Dragon.','2 Pong/Kong Naga + pair dari Naga ketiga.'],
@@ -1049,12 +1267,32 @@ const RULES={
       ex:[[_x('WIND_E',3),_x('WIND_S',3),_x('DRAG_G',3),_x('DRAG_W',3),_x('WIND_N',2)]]},
     {n:['13 Orphans','13 Orphan'],pt:13,d:['One each of the 1/9 of 3 suits + 4 Winds + 3 Dragons + one duplicate.','Satu tile 1/9 dari 3 jenis + 4 Angin + 3 Naga + satu duplikat.'],
       ex:[[['CHR1','CHR9','DOT1','DOT9','BAM1','BAM9','WIND_E','WIND_S','WIND_W','WIND_N','DRAG_G','DRAG_R','DRAG_W','WIND_E']]]},
-    {n:['Heavenly Gates / Nine Gates','Heavenly Gates / Nine Gates'],pt:15,d:['Concealed 1112345678999 in one suit + any tile of that suit.','Tertutup 1112345678999 dalam satu jenis + tile apa pun dari jenis itu.'],
+    {n:['Heavenly Gates','Heavenly Gates'],pt:15,d:['Has 1112345678999 in one suit + one extra tile of that suit.','Memiliki 1112345678999 dalam satu jenis + satu tile tambahan dari jenis itu.'],
       ex:[[[..._x('DOT1',3),..._run('DOT',2,8),..._x('DOT9',3),'DOT5']]]},
     {n:['Kong Hand / 4 Kongs','Empat Kong'],pt:12,d:['Four Kongs + one pair. Kongs can be exposed or concealed.','Empat Kong + satu pair. Kong boleh terbuka atau tertutup.'],
-      ex:[[_x('BAM1',4),_x('DOT5',4),_x('CHR7',4)],[_x('WIND_E',4),_x('DRAG_W',2)]]}
+      ex:[[_x('BAM1',4),_x('DOT5',4),_x('CHR7',4)],[_x('WIND_E',4),_x('DRAG_W',2)]]},
+    {n:['All One or Nine','Semua Satu atau Sembilan'],pt:18,lb:['new6','new18'],d:['Every tile is a 1 or a 9 of a suit, no Winds or Dragons.','Semua tile adalah 1 atau 9 dari satu jenis, tanpa Angin atau Naga.'],
+      ex:[[_x('CHR1',3),_x('CHR9',3),_x('BAM1',3),_x('DOT9',3),_x('DOT1',2)]]},
+    {n:['Two Double Chi','Dua Chi Kembar'],pt:10,lb:['new18'],d:['Two pairs of identical Chi.','Dua pasang Chi yang sama persis.'],
+      ex:[[_run('CHR',2,4),_run('CHR',2,4),_run('BAM',5,7),_run('BAM',5,7)]]},
+    {n:['Four Sequence Pong','Empat Pong Berurutan'],pt:8,lb:['new18'],d:['4 consecutive-number Pongs/Kongs in the same suit.','4 Pong/Kong berurutan dalam satu jenis.'],
+      ex:[[_x('BAM3',3),_x('BAM4',3),_x('BAM5',3),_x('BAM6',3)]]},
+    {n:['Four Hidden Pong','Empat Pong Tersembunyi'],pt:10,lb:['new18'],d:['4 Pongs/Kongs made from your own concealed tiles. Only counts when Concealed Hand is chosen; otherwise it scores as All Pongs.','4 Pong/Kong dari tile tertutup Anda sendiri. Hanya dihitung jika Hand Tertutup dipilih; jika tidak, dihitung sebagai Semua Pong.'],
+      ex:[[_x('CHR2',3),_x('BAM6',3),_x('DOT9',3),_x('CHR5',3)]]}
   ]
 };
+/* Rule-set labels for the original rules. Anything not listed here belongs to all three sets. */
+const EXISTING_RULE_LABELS={
+  'Concealed Hand':['new6','new18'],
+  'No Orphan / All Simples':['new6','new18'],
+  'Pure Straight':['new18'],
+  'Mix Orphans':['new18'],
+  'Pure Orphans':['new18']
+};
+Object.values(RULES).flat().forEach(r=>{ if(!r.lb) r.lb=EXISTING_RULE_LABELS[r.n[0]]||['classic','new6','new18']; });
+/* List order inside every tab: (Classic, New6, New18) first, then (New6, New18), then (New18). Original order is kept within each group. */
+const ruleGroupRank=r=>r.lb.includes('classic')?0:(r.lb.includes('new6')?1:2);
+Object.keys(RULES).forEach(k=>{ RULES[k]=RULES[k].map((r,i)=>({r,i})).sort((a,b)=>ruleGroupRank(a.r)-ruleGroupRank(b.r)||a.i-b.i).map(x=>x.r); });
 function ruleTileHtml(k){
   if(k==='?') return `<div class="tile xs blank">?</div>`;
   return `<div class="tile xs">${tileShort(k)}</div>`;
@@ -1064,12 +1302,19 @@ function ruleExampleHtml(ex){
     row.map(seg=> seg==='/' ? `<span class="rsep">/</span>` : `<div class="rg">${seg.map(ruleTileHtml).join('')}</div>`).join('')
   }</div>`).join('');
 }
+const RULE_LABELS={
+  classic:{t:'Classic',bg:'#F3E7C0',fg:'#6B4E00',bd:'#D9C27A'},
+  new6:{t:'New6',bg:'#D9EDD5',fg:'#1F5B2A',bd:'#9CCB95'},
+  new18:{t:'New18',bg:'#F7D9D9',fg:'#8A1C1C',bd:'#E1A1A1'}
+};
+function ruleLabelHtml(k){const c=RULE_LABELS[k]; return c?`<span class="sans" style="display:inline-block;font-size:10px;font-weight:700;letter-spacing:.04em;padding:2px 8px;border-radius:999px;background:${c.bg};color:${c.fg};border:1px solid ${c.bd};">${c.t}</span>`:'';}
 function ruleCardHtml(r){
   return `<div class="card pop">
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0">
         <div class="font-bold sans text-[15px] leading-snug">${L(r.n[0],r.n[1])}</div>
         <div class="sans text-xs text-[#8a5a63] mt-1">${L(r.d[0],r.d[1])}</div>
+        ${r.lb&&r.lb.length?`<div class="flex flex-wrap gap-1.5 mt-2">${r.lb.map(ruleLabelHtml).join('')}</div>`:''}
       </div>
       <div class="pt-badge ${r.pt===0?'zero':''}"><b>${r.pt}</b><small>${L('PTS','POIN')}</small></div>
     </div>
@@ -1099,6 +1344,10 @@ function ruleScoringHtml(){
       <div class="card pop"><div class="font-bold sans text-sm">Self Draw</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('Each of the 3 other players pays the full points of the hand to the winner. Example: a 4-point hand = each player pays 4, so the winner receives 12.','Masing-masing dari ketiga pemain lain membayar poin hand penuh kepada pemenang. Contoh: hand 4 poin = setiap pemain membayar 4, sehingga pemenang menerima 12.')}</div></div>
       <div class="card pop"><div class="font-bold sans text-sm">${L('Discard Win','Menang dari Buangan')}</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('Only the player who discarded the winning tile pays, and they pay <b>double</b> the hand points. The other two players pay nothing. Example: a 4-point hand = the discarder pays 8, so the winner receives 8.','Hanya pemain yang membuang tile kemenangan yang membayar, dan membayar <b>dua kali lipat</b> poin hand. Dua pemain lain tidak membayar. Contoh: hand 4 poin = pemain yang membuang membayar 8, sehingga pemenang menerima 8.')}</div></div>
     </div>
+    <div class="section-title mt-5">${L('Point Limit (optional)','Batas Poin (opsional)')}</div>
+    <div class="card pop">
+      <div class="sans text-sm">${L('When creating a game you can switch on a <b>Point Limit</b> (minimum 10). A hand worth more than the limit is counted as the limit. The limit is applied first, then the payment rule: Self Draw = each of the 3 players pays the limited points; Discard Win = the discarder pays double. Example with a limit of 10: a 13-point hand counts as 10, so a Self Draw pays 10 each (winner +30) and a Discard Win costs the discarder 20 (winner +20). The limit is fixed when the game is created.','Saat membuat permainan Anda bisa mengaktifkan <b>Batas Poin</b> (minimum 10). Hand yang nilainya melebihi batas dihitung sebagai batas. Batas diterapkan lebih dulu, lalu aturan pembayaran: Self Draw = ketiga pemain masing-masing membayar poin yang sudah dibatasi; Menang dari Buangan = pemain yang membuang membayar dua kali lipat. Contoh batas 10: hand 13 poin dihitung 10, sehingga Self Draw dibayar 10 per pemain (pemenang +30) dan Menang dari Buangan membuat pembuang membayar 20 (pemenang +20). Batas ditetapkan saat permainan dibuat.')}</div>
+    </div>
     <div class="section-title mt-5">${L('Minimum Point Requirement','Syarat Poin Minimum')}</div>
     <div class="card pop" style="border:2px solid var(--maje-primary);">
       <div class="sans text-sm">${L('Most HK Mahjong games require a minimum of <b>3 points</b> to win (though casual play may allow 1 or 2). You can\'t just complete any hand: it needs enough scoring patterns to meet the threshold.','Kebanyakan permainan Mahjong HK mensyaratkan minimum <b>3 poin</b> untuk menang (permainan santai boleh 1 atau 2). Anda tidak bisa menang dengan hand apa saja: harus punya cukup pola poin untuk mencapai batas tersebut.')}</div>
@@ -1112,6 +1361,7 @@ function viewRules(){
   <div class="px-5 pt-10 pb-3"><button class="sans text-sm text-[#8a5a63]" onclick="app.act('RULES_BACK')">← Back</button>
     <div class="text-2xl font-bold mt-3">House Rules</div>
     <div class="sans text-xs text-[#8a5a63] mt-1">${L('Hong Kong Mahjong rules — hands that score points','Aturan Mahjong Hong Kong — hand yang memberi poin')}</div>
+    <div class="sans text-xs text-[#8a5a63] mt-1">${L('The labels under a rule show which rule set it comes from:','Label di bawah aturan menunjukkan asal rule set-nya:')} ${['classic','new6','new18'].map(ruleLabelHtml).join(' ')}</div>
   </div>
   <div class="px-5 flex gap-2 overflow-x-auto pb-1">
     ${RULE_TABS.map(([k,lbl])=>`<button class="rule-chip ${tab===k?'active':''}" onclick="app.act('RULES_TAB','${k}')">${L(lbl[0],lbl[1])}</button>`).join('')}
@@ -1389,17 +1639,20 @@ const app={
   setDraftPlayer(i,v){ S.draft.players[i]=v; },
   act(type,payload){
     switch(type){
-      case 'GO_HOME': S.view='home'; break;
-      case 'GO_NEW_GAME': S.draft={name:'',players:['Player 1','Player 2','Player 3','Player 4'],roundWind:'E',dealerIdx:0}; S.view='newGame'; break;
+      case 'GO_HOME': S.undoPending=null; S.view='home'; S.editingHand=null; S.viewingHand=null; break;
+      case 'GO_NEW_GAME': S.draft={name:'',players:['Player 1','Player 2','Player 3','Player 4'],roundWind:'E',dealerIdx:0,limitOn:false,limitVal:10}; S.view='newGame'; break;
       case 'SET_ROUND': S.draft.roundWind=payload; break;
       case 'SET_DEALER': S.draft.dealerIdx=payload; break;
+      case 'TOGGLE_LIMIT': S.draft.limitOn=!S.draft.limitOn; if(!S.draft.limitVal||S.draft.limitVal<10) S.draft.limitVal=10; break;
+      case 'SET_LIMIT': S.draft.limitVal=Math.max(10,payload); break;
+      case 'LIMIT_STEP': S.draft.limitVal=Math.min(99,Math.max(10,(S.draft.limitVal||10)+payload)); break;
       case 'START_GAME': {
         const players=S.draft.players.map((name,i)=>({id:'p'+i+'_'+Date.now(),name:name||('Player '+(i+1))}));
-        const g=emptyGame(S.draft.name,players,S.draft.roundWind,S.draft.dealerIdx);
+        const g=emptyGame(S.draft.name,players,S.draft.roundWind,S.draft.dealerIdx,S.draft.limitOn?Math.max(10,S.draft.limitVal||10):null);
         S.games.push(g); save(); S.currentGameId=g.id; S.view='game'; break;
       }
-      case 'OPEN_GAME': S.currentGameId=payload; S.view='game'; break;
-      case 'GO_GAME': S.view='game'; break;
+      case 'OPEN_GAME': S.undoPending=null; S.currentGameId=payload; S.view='game'; S.editingHand=null; S.viewingHand=null; break;
+      case 'GO_GAME': S.view='game'; S.editingHand=null; S.viewingHand=null; break;
       case 'GO_HISTORY': S.view='history'; break;
       case 'GO_RULES': if(S.view!=='rules') S.rulesFrom=S.view; S.rulesTab='all'; S.view='rules'; window.scrollTo(0,0); break;
       case 'RULES_TAB': S.rulesTab=payload; window.scrollTo(0,0); break;
@@ -1415,16 +1668,18 @@ const app={
         if(g && !g.finishedAt){ g.finishedAt=new Date().toISOString(); save(); }
         S.finalPhotoDataUrl=null; S.view='game'; break;
       }
-      case 'GO_RECORD_WIN': S.winCtx={winnerId:null,winMethod:null,discardedBy:null,isLastTile:false,isRobbingKong:false,isConcealedHand:false}; S.draft=newDraft(); S.view='recordWin'; break;
-      case 'GO_QUICK': S.winCtx={winMethod:null,discardedBy:null,seatWind:null,roundWind:null,isLastTile:false,isRobbingKong:false,isConcealedHand:false}; S.draft=newDraft(); S.view='quick'; break;
+      case 'GO_RECORD_WIN': S.editingHand=null; S.viewingHand=null; S.winCtx={winnerId:null,winMethod:null,discardedBy:null,isLastTile:false,isRobbingKong:false,isConcealedHand:false}; S.draft=newDraft(); S.view='recordWin'; break;
+      case 'GO_QUICK': S.editingHand=null; S.viewingHand=null; S.winCtx={winMethod:null,discardedBy:null,seatWind:null,roundWind:null,isLastTile:false,isRobbingKong:false,isConcealedHand:false}; S.draft=newDraft(); S.view='quick'; break;
       case 'PICK_WINNER': S.winCtx.winnerId=payload; break;
       case 'BACK_WINNER': S.winCtx.winnerId=null; break;
-      case 'PICK_METHOD': S.winCtx.winMethod=payload; if(payload==='SELF_DRAW') S.winCtx.isConcealedHand=false; break;
+      case 'PICK_METHOD': S.winCtx.winMethod=payload; if(payload==='SELF_DRAW') S.winCtx.isRobbingKong=false; break;
       case 'BACK_METHOD': S.winCtx.winMethod=null; S.winCtx.discardedBy=null; break;
       case 'PICK_DISCARDER': S.winCtx.discardedBy=payload; break;
+      case 'TOGGLE_FLAG': if(FLAG_KEYS.includes(payload)) S.winCtx[payload]=!S.winCtx[payload]; break;
+      case 'TOGGLE_GROUP_EXPOSED': { const gr=S.draft.groups[payload]; if(gr) gr.isExposed=!gr.isExposed; break; }
       case 'TOGGLE_LAST_TILE': S.winCtx.isLastTile=!S.winCtx.isLastTile; break;
-      case 'TOGGLE_ROBBING_KONG': S.winCtx.isRobbingKong=!S.winCtx.isRobbingKong; break;
-      case 'TOGGLE_CONCEALED': if(S.winCtx.winMethod!=='SELF_DRAW') S.winCtx.isConcealedHand=!S.winCtx.isConcealedHand; break;
+      case 'TOGGLE_ROBBING_KONG': if(S.winCtx.winMethod!=='SELF_DRAW') S.winCtx.isRobbingKong=!S.winCtx.isRobbingKong; break;
+      case 'TOGGLE_CONCEALED': S.winCtx.isConcealedHand=!S.winCtx.isConcealedHand; break;
       case 'ADD_TILE': {
         if(countAllCopies(S.draft,payload)>=4){alert('Only 4 copies of a tile exist — you already have 4 of this one.');break;}
         S.draft.concealedTiles.push(payload); break;
@@ -1465,8 +1720,9 @@ const app={
         const concealedForAnalysis=S.draft.declaredPair?auto.concealedTiles.concat(S.draft.declaredPair):auto.concealedTiles;
         const result=analyzeHand({
           concealedTiles:concealedForAnalysis, melds:finalMelds, declaredPair:S.draft.declaredPair, flowers:S.draft.flowers,
-          roundWind:g.roundWind, seatWind:seatWindOf(g,winnerIdx), winMethod:S.winCtx.winMethod,
-          isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand
+          roundWind:ctxG(g).roundWind, seatWind:seatWindOf(ctxG(g),winnerIdx), winMethod:S.winCtx.winMethod,
+          isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand,
+          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='game'; S.view='result'; break; }
         if(result.needsChoice){ S.pendingChoice={mode:'game',additionalPoints:result.additionalPoints,options:result.options}; S.view='chooseInterpretation'; break; }
@@ -1479,7 +1735,8 @@ const app={
         const result=analyzeHand({
           concealedTiles:concealedForAnalysis, melds:finalMelds, declaredPair:S.draft.declaredPair, flowers:S.draft.flowers,
           roundWind:S.winCtx.roundWind||'E', seatWind:S.winCtx.seatWind||'E', winMethod:S.winCtx.winMethod,
-          isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand
+          isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand,
+          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='quick'; S.view='result'; break; }
         if(result.needsChoice){ S.pendingChoice={mode:'quick',additionalPoints:result.additionalPoints,options:result.options}; S.view='chooseInterpretation'; break; }
@@ -1487,7 +1744,7 @@ const app={
       }
       case 'CHOOSE_INTERPRETATION': {
         const opt=S.pendingChoice.options[payload];
-        finalizeResult(S.pendingChoice.mode,{handStructure:opt.structure,detectedPatterns:opt.detectedPatterns,additionalPoints:S.pendingChoice.additionalPoints,totalPoints:opt.totalPoints});
+        finalizeResult(S.pendingChoice.mode,{handStructure:opt.structure,detectedPatterns:opt.detectedPatterns,additionalPoints:opt.additionalPoints||S.pendingChoice.additionalPoints,totalPoints:opt.totalPoints});
         break;
       }
       case 'CANCEL_CHOICE': S.pendingChoice=null; S.view = S.resultMode==='game' ? 'recordWin' : 'quick'; break;
@@ -1500,7 +1757,7 @@ const app={
           flowers:S.draft.flowers, winMethod:S.winCtx.winMethod, discardedBy:S.winCtx.discardedBy||null,
           isLastTile:S.winCtx.isLastTile, isRobbingKong:!!S.winCtx.isRobbingKong, roundWind:g.roundWind, winnerSeatWind:seatWindOf(g,winnerIdx),
           dealerPlayerId:currentDealer(g).id, scoringPatterns:S.lastResult.detectedPatterns.concat(S.lastResult.additionalPoints),
-          totalPoints:S.lastResult.totalPoints, settlement:S.lastSettlement
+          totalPoints:S.lastResult.totalPoints, paidPoints:S.lastResult.cappedPoints, settlement:S.lastSettlement, flags:pickFlags(S.winCtx)
         };
         g.hands.push(hand);
         g.players.forEach(p=>{g.scores[p.id]=(g.scores[p.id]||0)+S.lastSettlement[p.id];});
@@ -1515,10 +1772,82 @@ const app={
       }
       case 'VIEW_HAND': {
         const g=S.games.find(x=>x.id===payload.gid); const hd=g.hands[payload.idx];
-        const ADDITIONAL_NAMES=['Self Draw','Last Tile','Robbing the Kong','Concealed Hand','Kong','Suitable Flower','No Flower'];
-        S.lastResult={isWinningHand:true,handStructure:'Saved Hand',detectedPatterns:hd.scoringPatterns.filter(p=>!ADDITIONAL_NAMES.includes(p.name)),additionalPoints:hd.scoringPatterns.filter(p=>ADDITIONAL_NAMES.includes(p.name)),totalPoints:hd.totalPoints};
-        S.photoDataUrl=null; S.draft={concealedTiles:hd.tiles,groups:hd.exposedMelds||[],declaredPair:null,pendingSelection:[],flowers:hd.flowers}; S.winCtx={winMethod:hd.winMethod,isLastTile:hd.isLastTile,isRobbingKong:!!hd.isRobbingKong,winnerId:hd.winnerId,isConcealedHand:hd.scoringPatterns.some(p=>p.name==='Concealed Hand')};
-        S.lastSettlement=hd.settlement; S.resultMode='game'; S.currentGameId=g.id; S.view='result'; break;
+        const ADDITIONAL_NAMES=['Self Draw','Last Tile','Robbing the Kong','Concealed Hand','Kong','Suitable Flower','No Flower','One Set of Flowers','Two Sets of Flowers','Single Waiting Hand','Self-Drawn After Kong','All From Others','Heavenly Hand','Earthly Hand'];
+        S.lastResult={isWinningHand:true,handStructure:'Saved Hand',detectedPatterns:hd.scoringPatterns.filter(p=>!ADDITIONAL_NAMES.includes(p.name)),additionalPoints:hd.scoringPatterns.filter(p=>ADDITIONAL_NAMES.includes(p.name)),totalPoints:hd.totalPoints,cappedPoints:(hd.paidPoints!=null?hd.paidPoints:hd.totalPoints)};
+        S.photoDataUrl=null; S.draft={concealedTiles:hd.tiles,groups:hd.exposedMelds||[],declaredPair:null,pendingSelection:[],flowers:hd.flowers}; S.winCtx={winMethod:hd.winMethod,discardedBy:hd.discardedBy||null,isLastTile:hd.isLastTile,isRobbingKong:!!hd.isRobbingKong,winnerId:hd.winnerId,isConcealedHand:hd.scoringPatterns.some(p=>p.name==='Concealed Hand')};
+        Object.assign(S.winCtx,pickFlags(hd.flags));
+        S.lastSettlement=hd.settlement; S.resultMode='game'; S.currentGameId=g.id;
+        S.viewingHand={gid:g.id,idx:payload.idx}; S.editingHand=null; // read-only: no Confirm button, so it can never create a duplicate record
+        S.view='result'; break;
+      }
+      case 'START_EDIT_HAND': {
+        const g=S.games.find(x=>x.id===S.viewingHand.gid); const idx=S.viewingHand.idx; const hd=g.hands[idx];
+        const dIdx=Math.max(0,g.players.findIndex(p=>p.id===hd.dealerPlayerId));
+        S.editingHand={gid:g.id,idx,isLast:idx===g.hands.length-1,ctx:{dealerIdx:dIdx,roundWind:hd.roundWind}};
+        S.viewingHand=null;
+        S.winCtx={winnerId:hd.winnerId,winMethod:hd.winMethod,discardedBy:hd.discardedBy||null,isLastTile:!!hd.isLastTile,isRobbingKong:!!hd.isRobbingKong,isConcealedHand:hd.scoringPatterns.some(p=>p.name==='Concealed Hand')};
+        S.draft={concealedTiles:[...hd.tiles],groups:JSON.parse(JSON.stringify(hd.exposedMelds||[])),declaredPair:null,pendingSelection:[],flowers:[...(hd.flowers||[])]};
+        Object.assign(S.winCtx,pickFlags(hd.flags));
+        S.resultMode='game'; S.currentGameId=g.id; S.view='recordWin'; window.scrollTo(0,0); break;
+      }
+      case 'EDIT_SET_WINNER': S.winCtx.winnerId=payload; if(S.winCtx.discardedBy===payload) S.winCtx.discardedBy=null; break;
+      case 'EDIT_SET_METHOD': S.winCtx.winMethod=payload; if(payload==='SELF_DRAW'){S.winCtx.discardedBy=null;S.winCtx.isRobbingKong=false;} break;
+      case 'EDIT_SET_DISCARDER': S.winCtx.discardedBy=payload; break;
+      case 'UNDO_LAST_HAND': { // step 1: just show the in-page confirmation (browser confirm() popups are blocked in some embedded/installed views)
+        const g=S.games.find(x=>x.id===S.currentGameId);
+        if(g&&g.hands.length) S.undoPending=g.id;
+        break;
+      }
+      case 'UNDO_CANCEL': S.undoPending=null; break;
+      case 'UNDO_CONFIRM': {
+        const g=S.games.find(x=>x.id===S.currentGameId);
+        S.undoPending=null;
+        if(!g||!g.hands.length) break;
+        const hd=g.hands[g.hands.length-1];
+        // 1. take back the points this hand paid out
+        g.players.forEach(p=>{ g.scores[p.id]=(g.scores[p.id]||0)-((hd.settlement&&hd.settlement[p.id])||0); });
+        // 2. rotate the dealer / round wind back to how they were when this hand started
+        const dIdx=g.players.findIndex(p=>p.id===hd.dealerPlayerId);
+        if(dIdx>=0){
+          if(hd.winnerId!==hd.dealerPlayerId){ // a non-dealer win had moved the dealer on, so step the counter back too
+            const n=g.players.length, cur=g.dealerTurnInRound||1;
+            g.dealerTurnInRound=(cur===1)?n:cur-1;
+          }
+          g.dealerIdx=dIdx; g.roundWind=hd.roundWind;
+        }
+        // 3. delete the hand record
+        g.hands.pop();
+        S.viewingHand=null; S.editingHand=null;
+        save(); break;
+      }
+      case 'CANCEL_EDIT': S.editingHand=null; S.viewingHand=null; S.view='game'; window.scrollTo(0,0); break;
+      case 'CONFIRM_EDIT': {
+        const e=S.editingHand; const g=S.games.find(x=>x.id===e.gid); const hd=g.hands[e.idx];
+        const dealerId=g.players[e.ctx.dealerIdx].id;
+        const wasDealerWin=hd.winnerId===dealerId, isDealerWin=S.winCtx.winnerId===dealerId;
+        if(wasDealerWin!==isDealerWin && !e.isLast){
+          alert('Changing the winner between the dealer and a non-dealer would change the dealer rotation of the hands played after this one. This is only possible on the latest hand.'); break;
+        }
+        // 1. live score: take back what this hand originally paid out, then apply the corrected payout
+        g.players.forEach(p=>{ g.scores[p.id]=(g.scores[p.id]||0)-((hd.settlement&&hd.settlement[p.id])||0)+(S.lastSettlement[p.id]||0); });
+        // 2. dealer rotation: only needs redoing when the latest hand flips between dealer win / non-dealer win
+        if(wasDealerWin!==isDealerWin){
+          const n=g.players.length; let preTurn=g.dealerTurnInRound||1;
+          if(!wasDealerWin) preTurn=(preTurn===1)?n:preTurn-1; // undo the rotation this hand originally caused
+          const g2={players:g.players,dealerIdx:e.ctx.dealerIdx,roundWind:hd.roundWind,dealerTurnInRound:preTurn};
+          advanceDealerAndRound(g2,S.winCtx.winnerId);
+          g.dealerIdx=g2.dealerIdx; g.roundWind=g2.roundWind; g.dealerTurnInRound=g2.dealerTurnInRound;
+        }
+        // 3. rewrite the hand record (keeps its id, round wind and dealer-at-the-time)
+        const wIdx=g.players.findIndex(p=>p.id===S.winCtx.winnerId);
+        Object.assign(hd,{
+          winnerId:S.winCtx.winnerId, tiles:S.draft.concealedTiles, exposedMelds:S.draft.groups, flowers:S.draft.flowers,
+          winMethod:S.winCtx.winMethod, discardedBy:S.winCtx.discardedBy||null, isLastTile:S.winCtx.isLastTile, isRobbingKong:!!S.winCtx.isRobbingKong,
+          winnerSeatWind:seatWindOf(e.ctx,wIdx), scoringPatterns:S.lastResult.detectedPatterns.concat(S.lastResult.additionalPoints),
+          totalPoints:S.lastResult.totalPoints, paidPoints:S.lastResult.cappedPoints, settlement:S.lastSettlement, flags:pickFlags(S.winCtx), editedAt:new Date().toISOString()
+        });
+        save(); // persisted to the browser (localStorage) immediately
+        S.editingHand=null; S.viewingHand=null; S.view='game'; window.scrollTo(0,0); break;
       }
     }
     render();
@@ -1616,7 +1945,7 @@ const app={
 // Fix QSET (needed real 2-arg signature)
 const _origAct=app.act.bind(app);
 app.act=function(type,a,b){
-  if(type==='QSET'){ S.winCtx[a]=b; if(a==='winMethod' && b==='SELF_DRAW') S.winCtx.isConcealedHand=false; render(); return; }
+  if(type==='QSET'){ if(a==='winMethod'&&b==='SELF_DRAW'&&S.winCtx.isRobbingKong){ render(); return; } S.winCtx[a]=b; render(); return; }
   _origAct(type,a);
 };
 
