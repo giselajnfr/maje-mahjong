@@ -1,12 +1,16 @@
-const CACHE_NAME = 'maje-v7';
+const CACHE_NAME = 'maje-v20';
 
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.json',
-  './icon-180.png',
-  './icon-192.png',
-  './icon-512.png'
+  './icons/favicon.ico',
+  './icons/favicon-32.png',
+  './icons/favicon-48.png',
+  './icons/icon-180.png',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/icon-maskable-512.png'
 ];
 
 self.addEventListener('install', (event) => {

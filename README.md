@@ -10,6 +10,8 @@ This is the publish-ready mobile web package for MAJÉ.
 - `icons/icon-180.png` — Apple touch icon
 - `icons/icon-192.png` — Android/PWA icon
 - `icons/icon-512.png` — large PWA icon
+- `icons/icon-maskable-512.png` — Android adaptive (maskable) icon
+- `icons/favicon.ico`, `icons/favicon-32.png`, `icons/favicon-48.png` — browser tab favicon
 - `vercel.json` — Vercel configuration
 - `README.md` — deployment guide
 
