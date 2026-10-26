@@ -25,6 +25,9 @@
   .btn-primary{background:var(--maje-primary);color:#fff;}
   .btn-secondary{background:#fff;color:var(--maje-primary);border:1.5px solid var(--maje-primary);}
   .btn-ghost{background:var(--maje-secondary);color:var(--maje-primary);}
+  /* White option buttons (Dealer / Starting points / Scoring) — same look as the Discard win payment select */
+  .btn-opt{background:#fff;color:var(--maje-primary);border:1.5px solid var(--maje-secondary);}
+  .btn-opt.on{background:var(--maje-primary);color:#fff;border-color:var(--maje-primary);}
   .tile{
     background:linear-gradient(180deg,#fffdf8,#f3ede2); border:1px solid #d8cdbd; border-radius:8px;
     box-shadow:0 2px 3px rgba(0,0,0,.12); display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -359,8 +362,20 @@ function groupHasOrphan(g){
   if(g.type==='PONG'){const i=tileInfo(g.tiles[0]); return i.honor || i.val===1 || i.val===9;}
   return g.tiles.some(t=>{const i=tileInfo(t); return !i.honor && (i.val===1||i.val===9);});
 }
-function scoreStandard(groups,pair,roundWind,seatWind,isConcealed){
-  const patterns=[];
+/* Rule sets: Classic ⊂ HK 6 ('new6') ⊂ HK 18 ('new18'). A pattern listed here only scores from that set upward;
+ * anything not listed is a Classic rule and always applies. */
+const RULESET_RANK={classic:0,new6:1,new18:2};
+const PATTERN_MIN_SET={
+  'All Simples':'new6','Lacking a Suit':'new6','2-5-8 Eye':'new6','All One or Nine':'new6','Concealed Hand':'new6','Single Waiting Hand':'new6',
+  'Pure Straight':'new18','Mixed Orphans':'new18','Pure Orphans':'new18','Three Suits + Winds & Dragons':'new18','Double Chi':'new18','Two Double Chi':'new18',
+  'Three Sequence Pong':'new18','Four Sequence Pong':'new18','Three Hidden Pong':'new18','Four Hidden Pong':'new18','Three Suits Pong':'new18','Three Suits Chi':'new18',
+  'Four in One':'new18','Min-Max Chi':'new18','Min-Max Pong':'new18','All From Others':'new18'
+};
+function normRuleSet(rs){ return RULESET_RANK[rs]!=null?rs:'new18'; }
+function ruleAllowed(name,rs){ const min=PATTERN_MIN_SET[name]||'classic'; return RULESET_RANK[normRuleSet(rs)]>=RULESET_RANK[min]; }
+function ruleSetOf(g){ return normRuleSet(g&&g.ruleSet); }
+function scoreStandard(groups,pair,roundWind,seatWind,isConcealed,ruleSet){
+  let patterns=[];
   const allChi=groups.every(g=>g.type==='CHI');
   const allPong=groups.every(g=>g.type==='PONG');
   if(allChi) patterns.push({name:'All Chi',points:1,detail:'All four sets are Chi (sequences).'});
@@ -453,6 +468,8 @@ function scoreStandard(groups,pair,roundWind,seatWind,isConcealed){
   SUITS3.forEach(su=>{const st=chows.filter(c=>c.suit===su).map(c=>c.start); if(st.includes(1)&&st.includes(7)&&!st.includes(4)) patterns.push({name:'Min-Max Chi',points:1,detail:`${SUIT_NAME[su]} 123 and 789.`});});
   // Min-Max Pong (Pong/Kong of 1 and 9 in the same suit)
   SUITS3.forEach(su=>{const v=pongVals(su); if(v.includes(1)&&v.includes(9)) patterns.push({name:'Min-Max Pong',points:1,detail:`${SUIT_NAME[su]} Pong/Kong of 1 and of 9.`});});
+  // Keep only the patterns of the chosen rule set BEFORE the higher-tier replacement below, so a hidden pattern never removes a visible one.
+  patterns=patterns.filter(p=>ruleAllowed(p.name,ruleSet));
   /* ---- Higher-tier hands replace the lower patterns they already contain ---- */
   const dropPatterns=(...names)=>{for(let i=patterns.length-1;i>=0;i--) if(names.includes(patterns[i].name)) patterns.splice(i,1);};
   const has=n=>patterns.some(p=>p.name===n);
@@ -473,6 +490,7 @@ function scoreStandard(groups,pair,roundWind,seatWind,isConcealed){
 
 function analyzeHand(input){
   const {concealedTiles,melds,declaredPair,flowers,roundWind,seatWind,winMethod,isLastTile,isRobbingKong,isConcealedHand,isSingleWait,isAfterKong,isHeavenly,isEarthly}=input;
+  const ruleSet=normRuleSet(input.ruleSet);
   const meldTiles=melds.flatMap(m=>m.tiles);
   const allTiles=[...concealedTiles,...meldTiles];
   let candidates=[];
@@ -491,20 +509,20 @@ function analyzeHand(input){
       for(const groups of solveGroups(sortTiles(remaining))){
         if(groups.length===needed){
           const allGroups=[...meldsToGroups(melds),...groups];
-          candidates.push({source:'Standard Hand',patterns:scoreStandard(allGroups,declaredPair[0],roundWind,seatWind,isConcealedHand),groups:allGroups,pair:declaredPair[0]});
+          candidates.push({source:'Standard Hand',patterns:scoreStandard(allGroups,declaredPair[0],roundWind,seatWind,isConcealedHand,ruleSet),groups:allGroups,pair:declaredPair[0]});
         }
       }
     } else {
       for(const d of enumerateDecomp(concealedTiles,needed)){
         const groups=[...meldsToGroups(melds),...d.groups];
-        candidates.push({source:'Standard Hand',patterns:scoreStandard(groups,d.pair,roundWind,seatWind,isConcealedHand),groups,pair:d.pair});
+        candidates.push({source:'Standard Hand',patterns:scoreStandard(groups,d.pair,roundWind,seatWind,isConcealedHand,ruleSet),groups,pair:d.pair});
       }
     }
   }
   if(candidates.length===0){
     return {isWinningHand:false,detectedPatterns:[],additionalPoints:[],totalPoints:0,explanation:'No valid winning structure was found for these tiles. Check the tile count, groups and pair.'};
   }
-  const additional=[];
+  let additional=[];
   if(winMethod==='SELF_DRAW') additional.push({name:'Self Draw',points:1,detail:'The winning tile came from the wall.'});
   if(isLastTile) additional.push({name:'Last Tile',points:1,detail:'Won on the final live-wall tile.'});
   if(isConcealedHand) additional.push({name:'Concealed Hand',points:1,detail:'Marked as concealed — no exposed melds. Scores together with Self Draw when both apply.'});
@@ -526,6 +544,7 @@ function analyzeHand(input){
   if(winMethod==='DISCARD_WIN' && melds.length===4 && melds.every(m=>m.isExposed)) additional.push({name:'All From Others',points:2,detail:'All four sets were claimed from other players, and the win was on a discard.'});
   if(isHeavenly && winMethod==='SELF_DRAW' && seatWind==='E' && !hasKongMeld) additional.push({name:'Heavenly Hand',points:10,detail:'The dealer won on the opening draw (no Kong).'});
   if(isEarthly && winMethod==='DISCARD_WIN' && seatWind!=='E' && !hasKongMeld) additional.push({name:'Earthly Hand',points:10,detail:'Won on the very first discard of the game.'});
+  additional=additional.filter(p=>ruleAllowed(p.name,ruleSet));
   // Heavenly / Earthly Hand are 10-point hands that stand on their own: they replace Self Draw, Last Tile and No Flower (Earthly Hand also replaces Concealed Hand).
   if(additional.some(p=>p.name==='Heavenly Hand'||p.name==='Earthly Hand')){
     for(let i=additional.length-1;i>=0;i--) if(['Self Draw','Last Tile','No Flower',...(additional.some(p=>p.name==='Earthly Hand')?['Concealed Hand']:[])].includes(additional[i].name)) additional.splice(i,1);
@@ -581,7 +600,7 @@ function emptyGame(name,players,roundWind,dealerIdx,limit,scoreMode,discardMode,
   const style=extra.style==='SANTAI'?'SANTAI':'HK';
   const startPoints=(style==='HK' && extra.startPoints>0)?extra.startPoints:null;
   const scores={}; players.forEach(p=>scores[p.id]=startPoints||0);
-  return {id:'g'+Date.now(),name:name||'',players,roundWind,dealerIdx,dealerTurnInRound:1,limit:limit||null,scoreMode:scoreMode==='FAAN'?'FAAN':'POINTS',discardMode:(discardMode==='X3'||discardMode==='HALF')?discardMode:'X2',style,startPoints,hands:[],scores,createdAt:new Date().toISOString()};
+  return {id:'g'+Date.now(),name:name||'',players,roundWind,dealerIdx,dealerTurnInRound:1,limit:limit||null,ruleSet:normRuleSet(extra.ruleSet),scoreMode:scoreMode==='FAAN'?'FAAN':'POINTS',discardMode:(discardMode==='X3'||discardMode==='HALF')?discardMode:'X2',style,startPoints,hands:[],scores,createdAt:new Date().toISOString()};
 }
 /** Final standings: sorted by score desc, ties share a rank. wins = hands won. */
 function isSantai(g){ return !!g && g.style==='SANTAI'; }
@@ -859,6 +878,13 @@ function viewNewGame(){
         </button>`; }).join('')}
       </div>
     </div>
+    ${d.style==='HK'?`<div>
+      <div class="section-title !mb-0">${L('Rule set','Rule set')}</div>
+      <div class="sans text-xs text-[#8a5a63] mt-1 mb-2">${L('Each set includes the one before it. Only the rules of the chosen set are used when scoring hands.','Setiap set mencakup set sebelumnya. Hanya aturan dari set yang dipilih yang dipakai saat menghitung hand.')}</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+        ${[['classic','Classic',L('Classic rules only','Hanya aturan Classic')],['new6','HK 6',L('Classic + HK 6','Classic + HK 6')],['new18','HK 18',L('Classic + HK 6 + HK 18','Classic + HK 6 + HK 18')]].map(([k,t,desc])=>`<button type="button" class="btn btn-opt ${d.ruleSet===k?'on':''} sans" style="flex-direction:column;min-height:56px;padding:8px 4px;" onclick="app.act('SET_RULESET','${k}')"><span style="font-weight:700;font-size:15px;">${t}</span><span style="font-size:10.5px;font-weight:500;opacity:.8;margin-top:2px;line-height:1.2;text-align:center;">${desc}</span></button>`).join('')}
+      </div>
+    </div>`:''}
     <div>
       <div class="section-title">Game Name (optional)</div>
       <input class="w-full sans border border-[#E4D6D6] rounded-xl p-3 bg-white" value="${d.name||''}" oninput="app.setDraftName(this.value)" placeholder="e.g. Sunday Table 2">
@@ -873,7 +899,7 @@ function viewNewGame(){
     <div>
       <div class="section-title">Dealer</div>
       <div class="grid grid-cols-2 gap-2">
-      ${d.players.map((p,i)=>`<button class="btn ${d.dealerIdx===i?'btn-primary':'btn-ghost'} sans !p-2 !min-h-[44px] text-sm" onclick="app.act('SET_DEALER',${i})">${p||'Player '+(i+1)}</button>`).join('')}
+      ${d.players.map((p,i)=>`<button class="btn btn-opt ${d.dealerIdx===i?'on':''} sans !p-2 !min-h-[44px] text-sm" onclick="app.act('SET_DEALER',${i})">${p||'Player '+(i+1)}</button>`).join('')}
       </div>
     </div>
     ${d.style==='SANTAI'?'':`<div>
@@ -881,13 +907,13 @@ function viewNewGame(){
       <div class="sans text-xs text-[#8a5a63] mt-1 mb-2">${L('Everyone starts with the same balance. If anyone\'s points run out, the game ends right away. Most points wins.','Semua mulai dengan saldo yang sama. Kalau ada yang poinnya habis, game langsung selesai. Poin terbanyak menang.')}</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
         ${[200,500,1000,null].map(v=>{ const on=(d.startPoints||null)===v; const lbl=v===null?L('None (+/−)','Tanpa (+/−)'):v.toLocaleString(LANG==='id'?'id-ID':'en-US');
-          return `<button type="button" class="btn ${on?'btn-primary':'btn-ghost'} sans" style="min-height:44px;padding:8px 2px;font-size:14px;" onclick="app.act('SET_START_POINTS',${v===null?'null':v})">${lbl}</button>`; }).join('')}
+          return `<button type="button" class="btn btn-opt ${on?'on':''} sans" style="min-height:44px;padding:8px 2px;font-size:14px;" onclick="app.act('SET_START_POINTS',${v===null?'null':v})">${lbl}</button>`; }).join('')}
       </div>
     </div>
     <div>
       <div class="section-title">${L('Scoring','Penilaian')}</div>
       <div class="grid grid-cols-1 gap-2">
-        ${[['POINTS',L('Faan → Points','Faan → Poin'),L('Faan are converted to points with the table (e.g. 4 faan = 16 points).','Faan dikonversi menjadi poin dengan tabel (mis. 4 faan = 16 poin).')],['FAAN',L('Faan only','Hanya Faan'),L('The faan count is the score itself (no conversion).','Jumlah faan adalah skornya (tanpa konversi).')]].map(([m,t,desc])=>`<button class="btn ${d.scoreMode===m?'btn-primary':'btn-ghost'} sans !p-3 text-left" style="display:block;text-align:left;" onclick="app.act('SET_SCORE_MODE','${m}')"><div class="font-bold text-sm">${t}</div><div class="text-xs mt-1" style="opacity:.8;font-weight:500;">${desc}</div></button>`).join('')}
+        ${[['POINTS',L('Faan → Points','Faan → Poin'),L('Faan are converted to points with the table (e.g. 4 faan = 16 points).','Faan dikonversi menjadi poin dengan tabel (mis. 4 faan = 16 poin).')],['FAAN',L('Faan only','Hanya Faan'),L('The faan count is the score itself (no conversion).','Jumlah faan adalah skornya (tanpa konversi).')]].map(([m,t,desc])=>`<button class="btn btn-opt ${d.scoreMode===m?'on':''} sans !p-3 text-left" style="display:block;text-align:left;" onclick="app.act('SET_SCORE_MODE','${m}')"><div class="font-bold text-sm">${t}</div><div class="text-xs mt-1" style="opacity:.8;font-weight:500;">${desc}</div></button>`).join('')}
       </div>
     </div>
     <div>
@@ -918,8 +944,8 @@ function viewNewGame(){
         <div class="sans text-xs text-[#8a5a63] mt-2">${d.scoreMode==='FAAN'?L('Minimum 10. The limit applies to the faan of the hand.','Minimum 10. Batas berlaku pada faan hand.'):L('Minimum 10. The limit applies to the hand faan before it is converted to points by the Faan → Points table.','Minimum 10. Batas berlaku pada faan hand sebelum dikonversi menjadi poin lewat tabel Faan → Poin.')}</div>
       </div>`:''}
     </div>
-    </div>`}
-    <button class="btn btn-primary sans mt-2" onclick="app.act('START_GAME')">Start Game</button>
+`}
+    <button class="btn btn-primary sans mt-6 mb-6" onclick="app.act('START_GAME')">Start Game</button>
   </div>`;
 }
 
@@ -1218,17 +1244,18 @@ function handBuilderHtml(d,opts){
 function flagCheckboxHtml(ctx,key,label,enabled,hint){
   return `<label class="sans text-sm flex items-center gap-2 mb-1 ${enabled?'':'opacity-40'}"><input type="checkbox" ${(ctx[key]&&enabled)?'checked':''} ${enabled?'':'disabled'} onchange="app.act('TOGGLE_FLAG','${key}')"> ${label}${enabled?'':` <span class="text-xs">(${hint})</span>`}</label>`;
 }
-function extraConditionsHtml(ctx){
+function extraConditionsHtml(ctx,rs){
   const sd=ctx.winMethod==='SELF_DRAW';
   // Heavenly Hand / Earthly Hand checkboxes are hidden from the UI for now (still scored by the engine for old saved hands, and still in the guidebook).
-  return flagCheckboxHtml(ctx,'isSingleWait','Single Waiting Hand',true,'')
+  return (ruleAllowed('Single Waiting Hand',rs)?flagCheckboxHtml(ctx,'isSingleWait','Single Waiting Hand',true,''):'')
     + flagCheckboxHtml(ctx,'isAfterKong','Self-Drawn After Kong',sd,'self draw only');
 }
 function robbingKongCheckboxHtml(ctx){
   const disabled=ctx.winMethod==='SELF_DRAW'; // robbing a Kong means the tile came from another player, so it can't be a Self Draw
   return `<label class="sans text-sm flex items-center gap-2 mb-1 pb-3 ${disabled?'opacity-40':''}"><input type="checkbox" ${(ctx.isRobbingKong&&!disabled)?'checked':''} ${disabled?'disabled':''} onchange="app.act('TOGGLE_ROBBING_KONG')"> Robbing the Kong${disabled?' <span class="text-xs">(discard win only)</span>':''}</label>`;
 }
-function concealedHandCheckboxHtml(ctx){
+function concealedHandCheckboxHtml(ctx,rs){
+  if(!ruleAllowed('Concealed Hand',rs)) return '';
   return `<label class="sans text-sm flex items-center gap-2 mb-1">
     <input type="checkbox" ${ctx.isConcealedHand?'checked':''} onchange="app.act('TOGGLE_CONCEALED')">
     Concealed Hand — no exposed melds
@@ -1290,8 +1317,8 @@ function viewRecordWin(){
     ${handBuilderHtml(S.draft,{context:`${L('Scoring','Menghitung hand')} ${g.players.find(p=>p.id===ctx.winnerId).name}${L('\'s hand, so the seat is theirs.',' — angin kursi mengikuti pemain ini.')} (${windName(seatWindOf(ctxG(g),g.players.findIndex(p=>p.id===ctx.winnerId)))} ${L('seat','kursi')})`})}
     <div class="section-title mt-4">Additional Conditions</div>
     <label class="sans text-sm flex items-center gap-2 mb-1"><input type="checkbox" ${ctx.isLastTile?'checked':''} onchange="app.act('TOGGLE_LAST_TILE')"> Last Tile</label>
-    ${concealedHandCheckboxHtml(ctx)}
-    ${extraConditionsHtml(S.winCtx)}
+    ${concealedHandCheckboxHtml(ctx,ruleSetOf(g))}
+    ${extraConditionsHtml(S.winCtx,ruleSetOf(g))}
     ${robbingKongCheckboxHtml(S.winCtx)}
     <button class="btn btn-primary sans mt-2 ${hbReady(S.draft)?'':'opacity-50'}" onclick="app.act('ANALYZE_GAME')">Analyze Hand</button>
   </div>`;
@@ -1310,8 +1337,8 @@ function viewQuick(){
       <button class="btn ${ctx.winMethod==='DISCARD_WIN'?'btn-primary':'btn-ghost'} sans !min-h-[44px] text-sm" onclick="app.act('QSET','winMethod','DISCARD_WIN')">Discard Win</button>
     </div>
     <label class="sans text-sm flex items-center gap-2 mb-1"><input type="checkbox" ${ctx.isLastTile?'checked':''} onchange="app.act('TOGGLE_LAST_TILE')"> Last Tile</label>
-    ${concealedHandCheckboxHtml(ctx)}
-    ${extraConditionsHtml(S.winCtx)}
+    ${concealedHandCheckboxHtml(ctx,'new18')}
+    ${extraConditionsHtml(S.winCtx,'new18')}
     ${robbingKongCheckboxHtml(S.winCtx)}
     <div class="section-title">Seat Wind (optional)</div>
     <div class="grid grid-cols-4 gap-2 mb-2">${[['E',1],['S',2],['W',3],['N',4]].map(([w,n])=>`<button class="btn ${ctx.seatWind===w?'btn-primary':'btn-ghost'} sans !p-2 !min-h-[40px] text-xs" onclick="app.act('QSET','seatWind','${w}')">${w} (${n})</button>`).join('')}</div>
@@ -1974,8 +2001,9 @@ const app={
   act(type,payload){
     switch(type){
       case 'GO_HOME': S.undoPending=null; S.view='home'; S.editingHand=null; S.viewingHand=null; break;
-      case 'GO_NEW_GAME': S.draft={name:'',players:['Player 1','Player 2','Player 3','Player 4'],roundWind:'E',dealerIdx:0,limitOn:false,limitVal:10,scoreMode:'POINTS',discardMode:'X2',style:'HK',startPoints:null}; S.view='newGame'; break;
+      case 'GO_NEW_GAME': S.draft={name:'',players:['Player 1','Player 2','Player 3','Player 4'],roundWind:'E',dealerIdx:0,limitOn:false,limitVal:10,scoreMode:'POINTS',discardMode:'X2',style:'HK',ruleSet:'new18',startPoints:null}; S.view='newGame'; break;
       case 'SET_STYLE': S.draft.style=payload; break;
+      case 'SET_RULESET': S.draft.ruleSet=normRuleSet(payload); break;
       case 'SET_START_POINTS': S.draft.startPoints=payload; break;
       case 'SET_DISCARD_MODE': S.draft.discardMode=payload; break;
       case 'SET_LIMIT_SEL': { const n=Number(payload)||0; S.draft.limitOn=n>0; if(n>0) S.draft.limitVal=n; break; }
@@ -1987,7 +2015,7 @@ const app={
       case 'LIMIT_STEP': S.draft.limitVal=Math.min(99,Math.max(10,(S.draft.limitVal||10)+payload)); break;
       case 'START_GAME': {
         const players=S.draft.players.map((name,i)=>({id:'p'+i+'_'+Date.now(),name:name||('Player '+(i+1))}));
-        const g=emptyGame(S.draft.name,players,'E',S.draft.dealerIdx,S.draft.limitOn?Math.max(10,S.draft.limitVal||10):null,S.draft.scoreMode,S.draft.discardMode,{style:S.draft.style,startPoints:S.draft.startPoints});
+        const g=emptyGame(S.draft.name,players,'E',S.draft.dealerIdx,S.draft.limitOn?Math.max(10,S.draft.limitVal||10):null,S.draft.scoreMode,S.draft.discardMode,{style:S.draft.style,ruleSet:S.draft.ruleSet,startPoints:S.draft.startPoints});
         S.games.push(g); save(); S.currentGameId=g.id; S.view='game'; break;
       }
       case 'OPEN_GAME': S.undoPending=null; S.currentGameId=payload; S.view='game'; S.editingHand=null; S.viewingHand=null; break;
@@ -2069,7 +2097,8 @@ const app={
           concealedTiles:parts.concealedTiles, melds:parts.melds, declaredPair:parts.declaredPair, flowers:S.draft.flowers,
           roundWind:ctxG(g).roundWind, seatWind:seatWindOf(ctxG(g),winnerIdx), winMethod:S.winCtx.winMethod,
           isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand,
-          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly
+          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly,
+          ruleSet:ruleSetOf(g)
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='game'; S.view='result'; break; }
         if(result.needsChoice){ S.pendingChoice={mode:'game',additionalPoints:result.additionalPoints,options:result.options}; S.view='chooseInterpretation'; break; }
@@ -2082,7 +2111,8 @@ const app={
           concealedTiles:parts.concealedTiles, melds:parts.melds, declaredPair:parts.declaredPair, flowers:S.draft.flowers,
           roundWind:S.winCtx.roundWind||'E', seatWind:S.winCtx.seatWind||'E', winMethod:S.winCtx.winMethod,
           isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand,
-          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly
+          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly,
+          ruleSet:'new18'
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='quick'; S.view='result'; break; }
         if(result.needsChoice){ S.pendingChoice={mode:'quick',additionalPoints:result.additionalPoints,options:result.options}; S.view='chooseInterpretation'; break; }
