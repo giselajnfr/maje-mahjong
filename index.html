@@ -489,7 +489,7 @@ function scoreStandard(groups,pair,roundWind,seatWind,isConcealed,ruleSet){
 }
 
 function analyzeHand(input){
-  const {concealedTiles,melds,declaredPair,flowers,roundWind,seatWind,winMethod,isLastTile,isRobbingKong,isConcealedHand,isSingleWait,isAfterKong,isHeavenly,isEarthly}=input;
+  const {concealedTiles,melds,declaredPair,flowers,roundWind,seatWind,winMethod,isLastTile,isRobbingKong,isConcealedHand,isSingleWait,isAfterKong,isAllFromOthers,isHeavenly,isEarthly}=input;
   const ruleSet=normRuleSet(input.ruleSet);
   const meldTiles=melds.flatMap(m=>m.tiles);
   const allTiles=[...concealedTiles,...meldTiles];
@@ -541,7 +541,7 @@ function analyzeHand(input){
   if(setsOfFlowers===2) additional.push({name:'Two Sets of Flowers',points:8,detail:'All 4 Seasons and all 4 Flowers.'});
   if(isSingleWait) additional.push({name:'Single Waiting Hand',points:1,detail:'The hand was waiting on only one possible tile.'});
   if(isAfterKong && winMethod==='SELF_DRAW' && hasKongMeld) additional.push({name:'Self-Drawn After Kong',points:1,detail:'Won from the wall right after declaring a Kong.'});
-  if(winMethod==='DISCARD_WIN' && melds.length===4 && melds.every(m=>m.isExposed)) additional.push({name:'All From Others',points:2,detail:'All four sets were claimed from other players, and the win was on a discard.'});
+  if(isAllFromOthers && winMethod==='DISCARD_WIN') additional.push({name:'All From Others',points:2,detail:'All four sets were claimed from other players, and the win was on a discard.'});
   if(isHeavenly && winMethod==='SELF_DRAW' && seatWind==='E' && !hasKongMeld) additional.push({name:'Heavenly Hand',points:10,detail:'The dealer won on the opening draw (no Kong).'});
   if(isEarthly && winMethod==='DISCARD_WIN' && seatWind!=='E' && !hasKongMeld) additional.push({name:'Earthly Hand',points:10,detail:'Won on the very first discard of the game.'});
   additional=additional.filter(p=>ruleAllowed(p.name,ruleSet));
@@ -586,7 +586,7 @@ function save(){try{localStorage.setItem('maje_state',JSON.stringify({games:S.ga
 const persisted=load();
 let S={finalPhotoDataUrl:null,view:'home',games:persisted.games,quickHands:persisted.quickHands,currentGameId:null,draft:null,lastResult:null,lastSettlement:null,winCtx:null,photoDataUrl:null,viewingHand:null,editingHand:null};
 
-const FLAG_KEYS=['isSingleWait','isAfterKong','isHeavenly','isEarthly'];
+const FLAG_KEYS=['isSingleWait','isAfterKong','isAllFromOthers','isHeavenly','isEarthly'];
 function pickFlags(o){const r={};FLAG_KEYS.forEach(k=>r[k]=!!(o&&o[k]));return r;}
 function newDraft(){return {concealedTiles:[],groups:[],declaredPair:null,pendingSelection:[],flowers:[],
   mode:'sets', sets:[[],[],[],[]], setOpen:[true,true,true,true], pair:[], pairs:[null,null,null,null,null,null,null],
@@ -1248,7 +1248,8 @@ function extraConditionsHtml(ctx,rs){
   const sd=ctx.winMethod==='SELF_DRAW';
   // Heavenly Hand / Earthly Hand checkboxes are hidden from the UI for now (still scored by the engine for old saved hands, and still in the guidebook).
   return (ruleAllowed('Single Waiting Hand',rs)?flagCheckboxHtml(ctx,'isSingleWait','Single Waiting Hand',true,''):'')
-    + flagCheckboxHtml(ctx,'isAfterKong','Self-Drawn After Kong',sd,'self draw only');
+    + flagCheckboxHtml(ctx,'isAfterKong','Self-Drawn After Kong',sd,'self draw only')
+    + (ruleAllowed('All From Others',rs)?flagCheckboxHtml(ctx,'isAllFromOthers','All From Others',!sd,'discard win only'):'');
 }
 function robbingKongCheckboxHtml(ctx){
   const disabled=ctx.winMethod==='SELF_DRAW'; // robbing a Kong means the tile came from another player, so it can't be a Self Draw
@@ -1572,7 +1573,7 @@ const RULES={
       ex:[[['FLW_SPRING','FLW_SUMMER','FLW_AUTUMN','FLW_WINTER'],['FLW_PLUM','FLW_ORCHID','FLW_CHRYS','FLW_BAMBOO']]]},
     {n:['Single Waiting Hand','Menunggu Satu Tile'],pt:1,lb:['new6','new18'],d:['The hand was waiting on only one possible tile. Tick it yourself when entering the hand.','Hand hanya menunggu satu kemungkinan tile. Centang sendiri saat memasukkan hand.']},
     {n:['Self-Drawn After Kong','Self Draw Setelah Kong'],pt:1,lb:['classic','new6','new18'],d:['Winning from the wall right after declaring a Kong (self draw only).','Menang dari tembok tepat setelah menyatakan Kong (hanya self draw).']},
-    {n:['All From Others','Semua dari Pemain Lain'],pt:2,lb:['new18'],d:['All four sets were claimed from other players (mark every set Open) and the win was on a discard.','Keempat set diambil dari pemain lain (tandai semua set Open) dan menang dari buangan.']},
+    {n:['All From Others','Semua dari Pemain Lain'],pt:2,lb:['new18'],d:['All four sets were claimed from other players and the win was on a discard. Tick it yourself when entering the hand.','Keempat set diambil dari pemain lain dan menang dari buangan. Centang sendiri saat memasukkan hand.']},
     {n:['Heavenly Hand','Heavenly Hand'],pt:10,lb:['classic','new6','new18'],d:['The dealer draws a winning hand at the very start of the game. No Kong allowed.','Dealer langsung mendapat winning hand di awal permainan. Tidak boleh ada Kong.']},
     {n:['Earthly Hand','Earthly Hand'],pt:10,lb:['classic','new6','new18'],d:['A non-dealer completes a winning hand on the very first discard.','Pemain non-dealer menyelesaikan winning hand dengan buangan pertama.']}
   ],
@@ -2039,7 +2040,7 @@ const app={
       case 'GO_QUICK': S.editingHand=null; S.viewingHand=null; S.winCtx={winMethod:null,discardedBy:null,seatWind:null,roundWind:null,isLastTile:false,isRobbingKong:false,isConcealedHand:false}; S.draft=newDraft(); S.view='quick'; break;
       case 'PICK_WINNER': S.winCtx.winnerId=payload; break;
       case 'BACK_WINNER': S.winCtx.winnerId=null; break;
-      case 'PICK_METHOD': S.winCtx.winMethod=payload; if(payload==='SELF_DRAW') S.winCtx.isRobbingKong=false; break;
+      case 'PICK_METHOD': S.winCtx.winMethod=payload; if(payload==='SELF_DRAW'){S.winCtx.isRobbingKong=false;S.winCtx.isAllFromOthers=false;} break;
       case 'BACK_METHOD': S.winCtx.winMethod=null; S.winCtx.discardedBy=null; break;
       case 'PICK_DISCARDER': S.winCtx.discardedBy=payload; break;
       case 'TOGGLE_FLAG': if(FLAG_KEYS.includes(payload)) S.winCtx[payload]=!S.winCtx[payload]; break;
@@ -2097,7 +2098,7 @@ const app={
           concealedTiles:parts.concealedTiles, melds:parts.melds, declaredPair:parts.declaredPair, flowers:S.draft.flowers,
           roundWind:ctxG(g).roundWind, seatWind:seatWindOf(ctxG(g),winnerIdx), winMethod:S.winCtx.winMethod,
           isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand,
-          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly,
+          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isAllFromOthers:S.winCtx.isAllFromOthers, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly,
           ruleSet:ruleSetOf(g)
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='game'; S.view='result'; break; }
@@ -2111,7 +2112,7 @@ const app={
           concealedTiles:parts.concealedTiles, melds:parts.melds, declaredPair:parts.declaredPair, flowers:S.draft.flowers,
           roundWind:S.winCtx.roundWind||'E', seatWind:S.winCtx.seatWind||'E', winMethod:S.winCtx.winMethod,
           isLastTile:S.winCtx.isLastTile, isRobbingKong:S.winCtx.isRobbingKong, isConcealedHand:S.winCtx.isConcealedHand,
-          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly,
+          isSingleWait:S.winCtx.isSingleWait, isAfterKong:S.winCtx.isAfterKong, isAllFromOthers:S.winCtx.isAllFromOthers, isHeavenly:S.winCtx.isHeavenly, isEarthly:S.winCtx.isEarthly,
           ruleSet:'new18'
         });
         if(!result.isWinningHand){ S.lastResult=result; S.resultMode='quick'; S.view='result'; break; }
@@ -2180,7 +2181,7 @@ const app={
         S.resultMode='game'; S.currentGameId=g.id; S.view='recordWin'; window.scrollTo(0,0); break;
       }
       case 'EDIT_SET_WINNER': S.winCtx.winnerId=payload; if(S.winCtx.discardedBy===payload) S.winCtx.discardedBy=null; break;
-      case 'EDIT_SET_METHOD': S.winCtx.winMethod=payload; if(payload==='SELF_DRAW'){S.winCtx.discardedBy=null;S.winCtx.isRobbingKong=false;} break;
+      case 'EDIT_SET_METHOD': S.winCtx.winMethod=payload; if(payload==='SELF_DRAW'){S.winCtx.discardedBy=null;S.winCtx.isRobbingKong=false;S.winCtx.isAllFromOthers=false;} break;
       case 'EDIT_SET_DISCARDER': S.winCtx.discardedBy=payload; break;
       case 'UNDO_LAST_HAND': { // step 1: just show the in-page confirmation (browser confirm() popups are blocked in some embedded/installed views)
         const g=S.games.find(x=>x.id===S.currentGameId);
