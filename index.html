@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>MAJÉ — Mahjong Scorer</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <style>
   :root{
     --maje-primary:#5B0015; --maje-secondary:#E4D6D6; --maje-bg:#F7F4F0;
@@ -580,7 +582,8 @@ function load(){
   try{return JSON.parse(localStorage.getItem('maje_state'))||{games:[],quickHands:[]};}
   catch(e){return {games:[],quickHands:[]};}
 }
-function save(){try{localStorage.setItem('maje_state',JSON.stringify({games:S.games,quickHands:S.quickHands}));}catch(e){}}
+function persistLocal(){try{localStorage.setItem('maje_state',JSON.stringify({games:S.games,quickHands:S.quickHands}));}catch(e){}}
+function save(){ persistLocal(); try{ syncRooms(); }catch(e){} }
 
 /* ============================= STATE ============================= */
 const persisted=load();
@@ -600,7 +603,7 @@ function emptyGame(name,players,roundWind,dealerIdx,limit,scoreMode,discardMode,
   const style=extra.style==='SANTAI'?'SANTAI':'HK';
   const startPoints=(style==='HK' && extra.startPoints>0)?extra.startPoints:null;
   const scores={}; players.forEach(p=>scores[p.id]=startPoints||0);
-  return {id:'g'+Date.now(),name:name||'',players,roundWind,dealerIdx,dealerTurnInRound:1,limit:limit||null,ruleSet:normRuleSet(extra.ruleSet),scoreMode:scoreMode==='FAAN'?'FAAN':'POINTS',discardMode:(discardMode==='X3'||discardMode==='HALF')?discardMode:'X2',style,startPoints,hands:[],scores,createdAt:new Date().toISOString()};
+  return {id:'g'+Date.now(),name:name||'',players,roundWind,dealerIdx,dealerTurnInRound:1,limit:limit||null,ruleSet:normRuleSet(extra.ruleSet),scoreMode:scoreMode==='FAAN'?'FAAN':'POINTS',discardMode:discardMode==='ALL'?'ALL':'SPLIT',style,startPoints,hands:[],scores,createdAt:new Date().toISOString()};
 }
 /** Final standings: sorted by score desc, ties share a rank. wins = hands won. */
 function isSantai(g){ return !!g && g.style==='SANTAI'; }
@@ -624,6 +627,8 @@ function computeStandings(g){
 function winsLabel(n){ return n+' '+(LANG==='id'?'menang':(n===1?'win':'wins')); }
 function fmtPts(v){ return (v>0?'+':'')+v; }
 /** The player object of the current dealer (dealer changes as the game progresses). */
+/** Games have no typed name any more: they are identified by their room code (older games that still have a name keep it). */
+function gameTitle(g){ return g.name || (g.roomCode ? 'Room '+g.roomCode : tr('Untitled Game')); }
 function currentDealer(g){ return g.players[g.dealerIdx]; }
 /** A player's seat wind is not fixed — it rotates together with the dealer.
  *  Whoever is dealer is always East; winds are assigned counterclockwise from there. */
@@ -660,19 +665,21 @@ function faanToPoints(f){
  *  Games saved before this option existed (no scoreMode) keep scoring in faan; quick counts (no game) show the converted points. */
 function scoreModeOf(g){ return g ? (g.scoreMode==='POINTS'?'POINTS':'FAAN') : 'POINTS'; }
 function scoreUnit(g){ return scoreModeOf(g)==='POINTS'?'pts':'faan'; }
-/** Discard-win payment style (chosen when the game is created). Multipliers are of the "per player" amount (P):
- *  X2   = only the discarder pays, P x2 (the table's "from discarder" column; default and what older games use)
- *  X3   = only the discarder pays the full amount, P x3 (same total as a self draw)
- *  HALF = the discarder pays P x2 and each of the other two pays P x0.5 (winner still receives P x3) */
-function discardModeOf(g){ return g && (g.discardMode==='X3'||g.discardMode==='HALF') ? g.discardMode : 'X2'; }
-function discardSplit(g){ const m=discardModeOf(g); return m==='X3'?{discarder:3,others:0}:m==='HALF'?{discarder:2,others:0.5}:{discarder:2,others:0}; }
+/** Payment rules. P = the hand's BASE POINTS (faan converted with the table, or the faan itself in "Faan only" games).
+ *  Self draw (every game):   each of the 3 other players pays P x2           -> winner receives P x6
+ *  Discard win, mode ALL:    only the discarder pays P x3                     -> winner receives P x3   ("Discarder pays all")
+ *  Discard win, mode SPLIT:  the discarder pays P x2, the other two pay P x1  -> winner receives P x4   ("Half pay / Split")
+ *  New games and quick counts default to SPLIT. Older saved games: X2/X3 -> ALL, HALF -> SPLIT (hands already recorded keep the settlement they were saved with). */
+const SELF_DRAW_MULT=2;
+function discardModeOf(g){ if(!g) return 'SPLIT'; return (g.discardMode==='SPLIT'||g.discardMode==='HALF') ? 'SPLIT' : 'ALL'; }
+function discardSplit(g){ return discardModeOf(g)==='SPLIT'?{discarder:2,others:1}:{discarder:3,others:0}; }
 function payoutFor(f,g){
-  const self = scoreModeOf(g)==='POINTS' ? faanPayout(f).self : Math.max(0,Math.floor(Number(f)||0));
+  const base = scoreModeOf(g)==='POINTS' ? faanPayout(f).base : Math.max(0,Math.floor(Number(f)||0));
   const dm=discardSplit(g);
-  return {self, discard:self*dm.discarder, others:self*dm.others};
+  return {base, self:base*SELF_DRAW_MULT, discard:base*dm.discarder, others:base*dm.others};
 }
-/** Points a single hand pays out: {self: each player pays this on Self Draw, discard: the discarder pays this on Discard Win}. */
-function faanPayout(f){ const self=faanToPoints(f); return {self, discard:self*2}; }
+/** Base points of a hand with f faan (Faan -> Points table). */
+function faanPayout(f){ return {base:faanToPoints(f)}; }
 /** Commit a chosen scoring interpretation (there's only ever one to choose from unless the tiles were genuinely ambiguous, e.g. 123+123+123 read as Chi vs Pongs). */
 function finalizeResult(mode,resObj){
   S.lastResult={isWinningHand:true,handStructure:resObj.handStructure,detectedPatterns:resObj.detectedPatterns,additionalPoints:resObj.additionalPoints,totalPoints:resObj.totalPoints};
@@ -686,13 +693,13 @@ function finalizeResult(mode,resObj){
     const pts=g.limit?Math.min(resObj.totalPoints,g.limit):resObj.totalPoints;   // faan counted
     S.lastResult.cappedPoints=pts;
     const pay=payoutFor(pts,g);
-    S.lastResult.payPoints=pay.self;
+    S.lastResult.payPoints=pay.base;
     let settlement={};
     // Self Draw: each of the 3 other players pays the table points for the faan (winner receives that x 3).
     // Discard Win: only the discarder pays, and pays DOUBLE (winner receives that x 2); the other two pay nothing.
     if(S.winCtx.winMethod==='SELF_DRAW'){settlement[winner.id]=pay.self*3;others.forEach(p=>settlement[p.id]=-pay.self);}
     else{
-      // Discard Win: the discarder pays pay.discard; the other two pay pay.others each (0 unless the game uses "discarder x2, others x0.5").
+      // Discard Win: the discarder pays pay.discard; the other two pay pay.others each (0 in "Discarder pays all" mode, 1x base in "Split" mode).
       let total=0;
       others.forEach(p=>{ const v=p.id===S.winCtx.discardedBy?pay.discard:pay.others; settlement[p.id]=v?-v:0; total+=v; });
       settlement[winner.id]=total;
@@ -833,6 +840,141 @@ function patternRow(p){
   </div>`;
 }
 
+/* ============================= ROOMS (Firebase Realtime Database) =============================
+ * Every game gets a short room code. Other devices join with that code and everybody sees (and can record) the same game live.
+ * The whole game object is stored as one JSON string at  rooms/<CODE>/json  so arrays / empty values never get mangled by Firebase.
+ * FILL IN FIREBASE_CONFIG below (Firebase console -> Project settings -> Your apps -> Web app). Until then the app works exactly as before (local only). */
+const FIREBASE_CONFIG={
+  apiKey:"AIzaSyCz26fOj44D5ly4O2esqUP7NFt9A5dR-70",
+  authDomain:"maje-mahjong.firebaseapp.com",
+  databaseURL:"https://maje-mahjong-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:"maje-mahjong",
+  appId:"1:689609561802:web:3927e2216a3175c409c633"
+};
+const ROOM_ALPHABET='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I to avoid mix-ups when reading a code aloud
+let _db=null, roomConnected=false;
+const _roomRefs={}, _lastSeen={};
+function roomsReady(){ return !!_db; }
+function genRoomCode(){
+  const a=new Uint32Array(5); (window.crypto||window.msCrypto).getRandomValues(a);
+  return Array.from(a,n=>ROOM_ALPHABET[n%ROOM_ALPHABET.length]).join('');
+}
+function roomStatusText(){
+  if(!roomsReady()) return L('Firebase not set up – sync is off','Firebase belum diatur – sinkron mati');
+  return roomConnected ? '● '+L('Live – synced','Live – tersinkron') : '○ '+L('Offline – will sync when back online','Offline – disinkron saat online lagi');
+}
+function initFirebase(){
+  try{
+    if(!FIREBASE_CONFIG.databaseURL || typeof firebase==='undefined') return;
+    if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    _db=firebase.database();
+    _db.ref('.info/connected').on('value',s=>{ roomConnected=!!s.val(); const el=document.getElementById('roomStatus'); if(el) el.textContent=roomStatusText(); });
+  }catch(e){ _db=null; }
+}
+/** Push every game that has a room code and changed since the last push. */
+function syncRooms(){
+  if(!_db) return;
+  S.games.forEach(g=>{
+    if(!g.roomCode) return;
+    const json=JSON.stringify(g);
+    if(_lastSeen[g.roomCode]===json) return;
+    _lastSeen[g.roomCode]=json;
+    subscribeRoom(g.roomCode);
+    pushRoom(g,json);
+  });
+}
+function pushRoom(g,json){
+  const code=g.roomCode;
+  _db.ref('rooms/'+code).transaction(cur=>{
+    if(cur && cur.gid && cur.gid!==g.id) return;   // code already used by someone else's game -> abort
+    return {gid:g.id,json:json,updatedAt:Date.now()};
+  },(err,committed)=>{
+    if(err||committed) return;
+    // collision: pick a fresh code for this game
+    if(_roomRefs[code]){ _roomRefs[code].off(); delete _roomRefs[code]; }
+    delete _lastSeen[code];
+    g.roomCode=genRoomCode(); persistLocal(); syncRooms();
+    if(S.view==='game') render();
+  });
+}
+function subscribeRoom(code){
+  if(!_db || _roomRefs[code]) return;
+  const ref=_db.ref('rooms/'+code); _roomRefs[code]=ref;
+  ref.on('value',snap=>{
+    const v=snap.val();
+    const g=S.games.find(x=>x.roomCode===code); if(!g) return;
+    if(!v||!v.json){                                   // room not on the server yet (game made before Firebase was set up)
+      if(_lastSeen[code]===undefined){ _lastSeen[code]=JSON.stringify(g); pushRoom(g,_lastSeen[code]); }
+      return;
+    }
+    if(v.json===JSON.stringify(g)){ _lastSeen[code]=v.json; return; }   // our own echo
+    let ng; try{ ng=JSON.parse(v.json); }catch(e){ return; }
+    ng.roomCode=code;
+    S.games[S.games.indexOf(g)]=ng; _lastSeen[code]=JSON.stringify(ng);
+    persistLocal();
+    // don't yank the screen while someone is in the middle of entering a hand
+    if(['game','home','finish','history'].includes(S.view)) render();
+  });
+}
+async function joinRoom(raw){
+  const code=String(raw||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  S.joinMsg='';
+  if(code.length<4){ S.joinMsg=L('Enter the room code first.','Masukkan kode room dulu.'); render(); return; }
+  if(!_db){ S.joinMsg=L('Online rooms are not set up yet (Firebase config is empty).','Room online belum diatur (konfigurasi Firebase masih kosong).'); render(); return; }
+  S.joinBusy=true; render();
+  try{
+    const snap=await _db.ref('rooms/'+code).once('value'); const v=snap.val();
+    if(!v||!v.json){ S.joinMsg=L('Room not found. Check the code and try again.','Room tidak ditemukan. Cek kodenya lalu coba lagi.'); }
+    else{
+      const g=JSON.parse(v.json); g.roomCode=code;
+      const i=S.games.findIndex(x=>x.id===g.id);
+      if(i>=0) S.games[i]=g; else S.games.push(g);
+      _lastSeen[code]=JSON.stringify(g);
+      persistLocal(); subscribeRoom(code);
+      S.currentGameId=g.id; S.view='game'; S.joinCode=''; S.undoPending=null; window.scrollTo(0,0);
+    }
+  }catch(e){ S.joinMsg=L('Could not reach the server. Check your connection.','Tidak bisa terhubung ke server. Cek koneksi internet.'); }
+  S.joinBusy=false; render();
+}
+async function shareRoom(code){
+  const text=L('Join my MAJÉ mahjong game. Room code: ','Gabung game mahjong MAJÉ saya. Kode room: ')+code;
+  try{
+    if(navigator.share){
+      const d={title:'MAJÉ',text}; if(/^https?:/.test(location.protocol)) d.url=location.href.split('#')[0];
+      await navigator.share(d); return;
+    }
+  }catch(e){ if(e&&e.name==='AbortError') return; }
+  try{ await navigator.clipboard.writeText(code); alert(L('Room code copied: ','Kode room disalin: ')+code); }catch(e){ alert(code); }
+}
+function initRooms(){
+  initFirebase();
+  if(_db) S.games.forEach(g=>{ if(g.roomCode) subscribeRoom(g.roomCode); });
+}
+function roomCardHtml(g){
+  if(!g.roomCode) return '';
+  return `<div class="px-5 mt-4"><div class="card flex items-center justify-between gap-3">
+    <div style="min-width:0;">
+      <div class="section-title !mb-1">${L('Room code','Kode room')}</div>
+      <div class="sans font-bold" style="font-size:28px;letter-spacing:.22em;line-height:1.1;color:#5B0015;">${g.roomCode}</div>
+      <div class="sans text-xs text-[#8a5a63] mt-1" id="roomStatus">${roomStatusText()}</div>
+    </div>
+    <button class="btn btn-ghost sans !min-h-[44px] !p-3 text-sm" style="flex:none;" onclick="app.act('SHARE_ROOM')">${L('Share','Bagikan')}</button>
+  </div></div>`;
+}
+function viewJoin(){
+  return h`
+  <div class="px-5 pt-10 pb-4">
+    <button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_HOME')">← ${L('Back','Kembali')}</button>
+    <div class="text-2xl font-bold mt-3">${L('Join Game','Gabung Game')}</div>
+    <div class="sans text-sm text-[#8a5a63] mt-1">${L('Enter the room code shown on the host’s screen.','Masukkan kode room yang tampil di layar pembuat game.')}</div>
+  </div>
+  <div class="px-5 flex flex-col gap-3">
+    <input class="w-full sans border border-[#E4D6D6] rounded-xl p-3 bg-white text-center font-bold" style="font-size:28px;letter-spacing:.3em;text-transform:uppercase;" maxlength="8" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="ABCDE" value="${S.joinCode||''}" oninput="S.joinCode=this.value" onkeydown="if(event.key==='Enter')app.act('DO_JOIN')">
+    ${S.joinMsg?`<div class="sans text-sm font-semibold" style="color:#a33;">${S.joinMsg}</div>`:''}
+    <button class="btn btn-primary sans" ${S.joinBusy?'disabled style="opacity:.6;"':''} onclick="app.act('DO_JOIN')">${S.joinBusy?L('Joining…','Menggabung…'):L('Join','Gabung')}</button>
+  </div>`;
+}
+
 /* ============================= VIEWS ============================= */
 function viewHome(){
   const recent=S.games.slice(-3).reverse();
@@ -844,13 +986,16 @@ function viewHome(){
   <div class="px-6 flex flex-col gap-3 mt-4">
     <button class="btn btn-primary sans" onclick="app.act('GO_NEW_GAME')">+ New Game</button>
     <button class="btn btn-secondary sans" onclick="app.act('GO_QUICK')">✨ Count My Winning Hand</button>
-    <button class="btn btn-ghost sans" onclick="app.act('GO_RULES')">📖 House Rules</button>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <button class="btn btn-ghost sans" style="min-height:48px;padding:10px 8px;font-size:15px;" onclick="app.act('GO_JOIN')">🔑 ${L('Join Game','Gabung Game')}</button>
+      <button class="btn btn-ghost sans" style="min-height:48px;padding:10px 8px;font-size:15px;" onclick="app.act('GO_RULES')">📖 House Rules</button>
+    </div>
   </div>
   ${recent.length?`<div class="px-6 mt-8">
     <div class="section-title">Recent Games</div>
     <div class="flex flex-col gap-2">
     ${recent.map(g=>`<div class="card cursor-pointer" onclick="app.act('OPEN_GAME','${g.id}')">
-      <div class="sans font-semibold text-sm">${g.name||'Untitled Game'}</div>
+      <div class="sans font-semibold text-sm">${gameTitle(g)}</div>
       <div class="sans text-xs text-[#8a5a63] mt-1">${gameScoresLine(g)}</div>
     </div>`).join('')}
     </div></div>`:''}
@@ -886,10 +1031,6 @@ function viewNewGame(){
       </div>
     </div>`:''}
     <div>
-      <div class="section-title">Game Name (optional)</div>
-      <input class="w-full sans border border-[#E4D6D6] rounded-xl p-3 bg-white" value="${d.name||''}" oninput="app.setDraftName(this.value)" placeholder="e.g. Sunday Table 2">
-    </div>
-    <div>
       <div class="section-title">Players</div>
       <div class="flex flex-col gap-2">
       ${d.players.map((p,i)=>`<input class="w-full sans border border-[#E4D6D6] rounded-xl p-3 bg-white" value="${p}" oninput="app.setDraftPlayer(${i},this.value)">`).join('')}
@@ -918,8 +1059,8 @@ function viewNewGame(){
     </div>
     <div>
       <div class="section-title !mb-0">${L('Discard win payment','Pembayaran menang dari buangan')}</div>
-      <div class="sans text-xs text-[#8a5a63] mt-1 mb-2">${L('Self draw: the other three players always pay in full. This only changes who pays when someone wins on a discard.','Self draw: ketiga pemain lain selalu bayar penuh. Ini hanya mengatur siapa yang membayar saat ada yang menang dari buangan.')}</div>
-      ${(()=>{ const opts=[['X2',L('Discarder pays ×2 (per table)','Pembuang bayar ×2 (sesuai tabel)'),L('Only the discarder pays, double. The other two pay nothing.','Hanya pembuang yang bayar, dua kali lipat. Dua pemain lain tidak bayar.')],['X3',L('Discarder pays in full (×3)','Pembuang bayar penuh (×3)'),L('Only the discarder pays, triple — same total as a self draw.','Hanya pembuang yang bayar, tiga kali lipat — total sama dengan self draw.')],['HALF',L('Discarder ×2, others ×½','Pembuang ×2, lainnya ×½'),L('The discarder pays ×2 and each of the other two pays ×½.','Pembuang bayar ×2 dan masing-masing dua pemain lain bayar ×½.')]];
+      <div class="sans text-xs text-[#8a5a63] mt-1 mb-2">${L('Self draw: each of the other three players pays ×2 the base points. This only changes who pays when someone wins on a discard.','Self draw: ketiga pemain lain masing-masing bayar ×2 poin dasar. Ini hanya mengatur siapa yang membayar saat ada yang menang dari buangan.')}</div>
+      ${(()=>{ const opts=[['ALL',L('Discarder pays all','Pembuang bayar semua'),L('Only the discarder pays, ×3 the base points. The other two pay nothing.','Hanya pembuang yang bayar, ×3 poin dasar. Dua pemain lain tidak bayar.')],['SPLIT',L('Half pay / Split','Bayar Dibagi / Split'),L('The discarder pays ×2 and each of the other two pays ×1.','Pembuang bayar ×2 dan masing-masing dua pemain lain bayar ×1.')]];
         const cur=opts.find(o=>o[0]===d.discardMode)||opts[0];
         return `<select class="nw-select" style="width:100%;" onchange="app.act('SET_DISCARD_MODE',this.value)">${opts.map(o=>`<option value="${o[0]}" ${o[0]===cur[0]?'selected':''}>${o[1]}</option>`).join('')}</select>
         <div class="sans text-xs text-[#8a5a63] mt-2">${cur[2]}</div>`; })()}
@@ -961,13 +1102,14 @@ function viewGame(){
   <div class="px-5 flex items-start justify-between">
     <div>
       <div class="text-xl font-bold">Track ⓘ${g.finishedAt?'<span class="badge-done">FINISHED</span>':''}</div>
-      <div class="sans text-xs text-[#8a5a63] mt-1">Hand ${g.hands.length+1} · ${isSantai(g)?L('Casual','Santai'):(scoreModeOf(g)==='POINTS'?L('Faan → Points','Faan → Poin'):L('Faan only','Hanya Faan'))}${(!isSantai(g)&&g.startPoints!=null)?` · ${L('Start','Awal')} ${g.startPoints.toLocaleString(LANG==='id'?'id-ID':'en-US')}`:''}${isSantai(g)?'':discardModeOf(g)==='X3'?` · ${L('Discard ×3','Buangan ×3')}`:discardModeOf(g)==='HALF'?` · ${L('Discard ×2 / ×½','Buangan ×2 / ×½')}`:''}${(!isSantai(g)&&g.limit)?` · ${L('Limit','Batas')} ${g.limit} faan`:''}</div>
+      <div class="sans text-xs text-[#8a5a63] mt-1">Hand ${g.hands.length+1} · ${isSantai(g)?L('Casual','Santai'):(scoreModeOf(g)==='POINTS'?L('Faan → Points','Faan → Poin'):L('Faan only','Hanya Faan'))}${(!isSantai(g)&&g.startPoints!=null)?` · ${L('Start','Awal')} ${g.startPoints.toLocaleString(LANG==='id'?'id-ID':'en-US')}`:''}${isSantai(g)?'':discardModeOf(g)==='SPLIT'?` · ${L('Discard ×2 / ×1','Buangan ×2 / ×1')}`:` · ${L('Discard ×3','Buangan ×3')}`}${(!isSantai(g)&&g.limit)?` · ${L('Limit','Batas')} ${g.limit} faan`:''}</div>
     </div>
     <div class="text-center">
       <div class="w-14 h-14 rounded-full bg-[#5B0015] text-white flex items-center justify-center mx-auto" style="font-family:'Segoe UI Symbol','Noto Sans Symbols2',sans-serif;font-size:22px;">${TILE_GLYPH['WIND_'+g.roundWind]||''}</div>
       <div class="sans text-xs italic text-[#8a5a63] mt-1">${windName(g.roundWind)}</div>
     </div>
   </div>
+  ${roomCardHtml(g)}
   <div class="px-5 mt-4 grid grid-cols-2 gap-3">
   ${g.players.map((p,i)=>{
     const sw=seatWindOf(g,i), isDealer=p.id===dealer.id, score=g.scores[p.id]||0;
@@ -1469,7 +1611,7 @@ function viewFinish(){
   return h`
   <div class="px-5 pt-10 pb-4"><button class="sans text-sm text-[#8a5a63]" onclick="app.act('GO_GAME')">← Back to Game</button>
   <div class="text-2xl font-bold mt-3">Final Result</div>
-  <div class="sans text-xs text-[#8a5a63] mt-1">${g.name||'Untitled Game'} · ${g.hands.length} Hands played${isSantai(g)?` · ${L('Casual','Santai')}`:''}</div>
+  <div class="sans text-xs text-[#8a5a63] mt-1">${gameTitle(g)} · ${g.hands.length} Hands played${isSantai(g)?` · ${L('Casual','Santai')}`:''}</div>
   ${g.endedBy==='BUST'?`<div class="sans text-xs font-semibold mt-1" style="color:#5B0015">${bustedPlayers(g).map(p=>p.name).join(' & ')} ${L('ran out of points — game ended.','kehabisan poin — game selesai.')}</div>`:''}</div>
   <div class="px-5">
     <div class="champ pop">
@@ -1657,13 +1799,13 @@ function ruleScoringHtml(){
   const steps=[
     L('A player wins by completing a valid hand.','Pemain menang dengan menyelesaikan hand yang valid.'),
     L('Count the <b>faan</b> in the winning hand (based on tile patterns).','Hitung <b>faan</b> pada winning hand (berdasarkan pola tile).'),
-    L('Depending on the scoring chosen when the game was created, either use the faan as the score (<b>Faan only</b>) or convert the faan into <b>points</b> with the Faan → Points table below.','Tergantung penilaian yang dipilih saat permainan dibuat, pakai faan sebagai skor (<b>Hanya Faan</b>) atau konversikan faan menjadi <b>poin</b> dengan tabel Faan → Poin di bawah.'),
-    L('The losing players pay the winner those points (see "Who gives the points?" below).','Pemain yang kalah membayar poin tersebut kepada pemenang (lihat "Siapa yang membayar poin?" di bawah).')
+    L('Depending on the scoring chosen when the game was created, either use the faan as the <b>base points</b> (<b>Faan only</b>) or convert the faan into <b>base points</b> with the Faan → Points table below.','Tergantung penilaian yang dipilih saat permainan dibuat, pakai faan sebagai <b>poin dasar</b> (<b>Hanya Faan</b>) atau konversikan faan menjadi <b>poin dasar</b> dengan tabel Faan → Poin di bawah.'),
+    L('The losing players pay the winner a multiple of those base points (see “Who gives the points?” below).','Pemain yang kalah membayar pemenang berdasarkan kelipatan poin dasar tersebut (lihat “Siapa yang membayar poin?” di bawah).')
   ];
   // Table rows 0-13 are generated from the same function the scorer uses, so the guide can never disagree with the app.
   const tableRows=Array.from({length:14},(_,f)=>{
-    const pp=faanPayout(f);
-    return `<tr style="border-top:1px solid var(--maje-border,#E4D6D6);"><td style="padding:8px 6px;font-weight:700;">${f}</td><td style="padding:8px 6px;text-align:center;">${pp.self} ${L('per player','per pemain')}</td><td style="padding:8px 6px;text-align:right;">${pp.discard} ${L('from discarder','dari pembuang')}</td></tr>`;
+    const base=faanPayout(f).base;
+    return `<tr style="border-top:1px solid var(--maje-border,#E4D6D6);"><td style="padding:8px 6px;font-weight:700;">${f}</td><td style="padding:8px 6px;text-align:right;">${base}</td></tr>`;
   }).join('');
   return `<div class="mt-6">
     <div class="section-title">${L('Game styles','Gaya permainan')}</div>
@@ -1674,22 +1816,22 @@ function ruleScoringHtml(){
     </div>
     <div class="section-title mt-5">${L('Faan → Points','Faan → Poin')}</div>
     <div class="card pop">
-      <div class="sans text-sm mb-3">${L('In a <b>Faan → Points</b> game, every time a player wins their <b>faan are converted into points</b> with this table, and the points are what the losing players pay. In a <b>Faan only</b> game there is no conversion: the faan count is paid directly (self draw: each player pays the faan; discard win: the discarder pays double).','Pada permainan <b>Faan → Poin</b>, setiap kali pemain menang <b>faan mereka dikonversi menjadi poin</b> dengan tabel ini, dan poin itulah yang dibayar pemain yang kalah. Pada permainan <b>Hanya Faan</b> tidak ada konversi: jumlah faan dibayar langsung (self draw: tiap pemain membayar sebesar faan; menang dari buangan: pembuang membayar dua kali lipat).')}</div>
+      <div class="sans text-sm mb-3">${L('In a <b>Faan → Points</b> game, every time a player wins their <b>faan are converted into base points</b> with this table, and the losing players pay multiples of the base points (see “Who gives the points?” below). In a <b>Faan only</b> game there is no conversion: the faan count itself is the base points.','Pada permainan <b>Faan → Poin</b>, setiap kali pemain menang <b>faan mereka dikonversi menjadi poin dasar</b> dengan tabel ini, dan pemain yang kalah membayar kelipatan dari poin dasar (lihat “Siapa yang membayar poin?” di bawah). Pada permainan <b>Hanya Faan</b> tidak ada konversi: jumlah faan itu sendiri adalah poin dasar.')}</div>
       <table class="sans text-sm" style="width:100%;border-collapse:collapse;">
-        <thead><tr style="color:#8a5a63;font-size:12px;text-transform:uppercase;letter-spacing:.05em;"><th style="padding:6px;text-align:left;">Faan</th><th style="padding:6px;text-align:center;">${L('Self-drawn Win','Menang Self Draw')}</th><th style="padding:6px;text-align:right;">${L('Discard Win (×2)','Menang dari Buangan (×2)')}</th></tr></thead>
+        <thead><tr style="color:#8a5a63;font-size:12px;text-transform:uppercase;letter-spacing:.05em;"><th style="padding:6px;text-align:left;">Faan</th><th style="padding:6px;text-align:right;">${L('Base points','Poin dasar')}</th></tr></thead>
         <tbody>${tableRows}
-          <tr style="border-top:1px solid var(--maje-border,#E4D6D6);"><td colspan="3" style="padding:8px 6px;text-align:center;color:#8a5a63;">${L('…and so on (every 2 faan doubles the points).','…dan seterusnya (setiap 2 faan, poin berlipat dua).')}</td></tr>
+          <tr style="border-top:1px solid var(--maje-border,#E4D6D6);"><td colspan="2" style="padding:8px 6px;text-align:center;color:#8a5a63;">${L('…and so on (every 2 faan doubles the points).','…dan seterusnya (setiap 2 faan, poin berlipat dua).')}</td></tr>
         </tbody>
       </table>
     </div>
     <div class="section-title mt-5">${L('Who gives the points?','Siapa yang membayar poin?')}</div>
     <div class="flex flex-col gap-3">
-      <div class="card pop"><div class="font-bold sans text-sm">Self Draw</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('Each of the 3 other players pays the "Self-drawn Win" points to the winner. Example: a 4-faan hand = 16 points, so each player pays 16 and the winner receives 48.','Masing-masing dari ketiga pemain lain membayar poin "Menang Self Draw" kepada pemenang. Contoh: hand 4 faan = 16 poin, setiap pemain membayar 16 sehingga pemenang menerima 48.')}</div></div>
-      <div class="card pop"><div class="font-bold sans text-sm">${L('Discard Win','Menang dari Buangan')}</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('How a discard win is paid is chosen when the game is created. Example with a 4-faan hand (16 points per player):<br>• <b>Discarder pays ×2</b> (default, as in the table): the discarder pays 32, the others pay nothing, the winner receives 32.<br>• <b>Discarder pays in full (×3)</b>: the discarder pays 48, the others pay nothing, the winner receives 48.<br>• <b>Discarder ×2, others ×½</b>: the discarder pays 32 and each of the other two pays 8, the winner receives 48.','Cara pembayaran menang dari buangan dipilih saat permainan dibuat. Contoh hand 4 faan (16 poin per pemain):<br>• <b>Pembuang bayar ×2</b> (default, sesuai tabel): pembuang membayar 32, yang lain tidak bayar, pemenang menerima 32.<br>• <b>Pembuang bayar penuh (×3)</b>: pembuang membayar 48, yang lain tidak bayar, pemenang menerima 48.<br>• <b>Pembuang ×2, lainnya ×½</b>: pembuang membayar 32 dan masing-masing dua pemain lain membayar 8, pemenang menerima 48.')}</div></div>
+      <div class="card pop"><div class="font-bold sans text-sm">Self Draw</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('Each of the 3 other players pays <b>2× the base points</b> to the winner. Example: a 4-faan hand = 16 base points, so each player pays 32 and the winner receives 96.','Masing-masing dari ketiga pemain lain membayar <b>2× poin dasar</b> kepada pemenang. Contoh: hand 4 faan = 16 poin dasar, setiap pemain membayar 32 sehingga pemenang menerima 96.')}</div></div>
+      <div class="card pop"><div class="font-bold sans text-sm">${L('Discard Win','Menang dari Buangan')}</div><div class="sans text-xs text-[#8a5a63] mt-1">${L('How a discard win is paid is chosen when the game is created. Example with a 4-faan hand (16 base points):<br>• <b>Discarder pays all</b>: the discarder pays 48 (×3), the others pay nothing, the winner receives 48.<br>• <b>Half pay / Split</b>: the discarder pays 32 (×2) and each of the other two pays 16 (×1), the winner receives 64.','Cara pembayaran menang dari buangan dipilih saat permainan dibuat. Contoh hand 4 faan (16 poin dasar):<br>• <b>Pembuang bayar semua</b>: pembuang membayar 48 (×3), yang lain tidak bayar, pemenang menerima 48.<br>• <b>Bayar Dibagi / Split</b>: pembuang membayar 32 (×2) dan masing-masing dua pemain lain membayar 16 (×1), pemenang menerima 64.')}</div></div>
     </div>
     <div class="section-title mt-5">${L('Faan Limit (optional)','Batas Faan (opsional)')}</div>
     <div class="card pop">
-      <div class="sans text-sm">${L('When creating a game you can switch on a <b>Faan Limit</b> (minimum 10). A hand worth more faan than the limit is counted as the limit. The limit is applied first, then the faan are converted to points with the table above. Example with a limit of 10: a 13-faan hand counts as 10 faan = 128 points, so a Self Draw pays 128 from each player (winner +384) and a Discard Win costs the discarder 256 (winner +256). The limit is fixed when the game is created.','Saat membuat permainan Anda bisa mengaktifkan <b>Batas Faan</b> (minimum 10). Hand yang faan-nya melebihi batas dihitung sebagai batas. Batas diterapkan lebih dulu, lalu faan dikonversi menjadi poin dengan tabel di atas. Contoh batas 10: hand 13 faan dihitung 10 faan = 128 poin, sehingga Self Draw dibayar 128 per pemain (pemenang +384) dan Menang dari Buangan membuat pembuang membayar 256 (pemenang +256). Batas ditetapkan saat permainan dibuat.')}</div>
+      <div class="sans text-sm">${L('When creating a game you can switch on a <b>Faan Limit</b> (minimum 10). A hand worth more faan than the limit is counted as the limit. The limit is applied first, then the faan are converted to base points with the table above. Example with a limit of 10: a 13-faan hand counts as 10 faan = 128 base points, so a Self Draw pays 256 from each player (winner +768) and, with Discarder pays all, a Discard Win costs the discarder 384 (winner +384). The limit is fixed when the game is created.','Saat membuat permainan Anda bisa mengaktifkan <b>Batas Faan</b> (minimum 10). Hand yang faan-nya melebihi batas dihitung sebagai batas. Batas diterapkan lebih dulu, lalu faan dikonversi menjadi poin dasar dengan tabel di atas. Contoh batas 10: hand 13 faan dihitung 10 faan = 128 poin dasar, sehingga Self Draw dibayar 256 per pemain (pemenang +768) dan, dengan Pembuang bayar semua, Menang dari Buangan membuat pembuang membayar 384 (pemenang +384). Batas ditetapkan saat permainan dibuat.')}</div>
     </div>
     <div class="section-title mt-5">${L('Minimum Faan Requirement','Syarat Faan Minimum')}</div>
     <div class="card pop" style="border:2px solid var(--maje-primary);">
@@ -1724,7 +1866,7 @@ function viewHistory(){
   <div class="px-5 flex flex-col gap-3">
   ${S.games.length===0 && S.quickHands.length===0?`<div class="sans text-sm text-[#8a5a63]">Nothing here yet.</div>`:''}
   ${S.games.slice().reverse().map(g=>`<div class="card cursor-pointer" onclick="app.act('OPEN_GAME','${g.id}')">
-    <div class="flex justify-between"><span class="font-bold">${g.name||'Untitled Game'}${g.finishedAt?'<span class="badge-done">FINISHED</span>':''}</span><span class="sans text-xs text-[#8a5a63]">${new Date(g.createdAt).toLocaleDateString()}</span></div>
+    <div class="flex justify-between"><span class="font-bold">${gameTitle(g)}${g.finishedAt?'<span class="badge-done">FINISHED</span>':''}</span><span class="sans text-xs text-[#8a5a63]">${new Date(g.createdAt).toLocaleDateString()}</span></div>
     <div class="sans text-xs text-[#8a5a63] mt-1">${gameScoresLine(g)}</div>
   </div>`).join('')}
   ${S.quickHands.length?`<div class="section-title mt-2">Counted Hands</div>`:''}
@@ -1741,6 +1883,7 @@ function render(){
   switch(S.view){
     case 'home': html=viewHome(); break;
     case 'newGame': html=viewNewGame(); break;
+    case 'join': html=viewJoin(); break;
     case 'game': html=viewGame(); break;
     case 'recordWin': html=viewRecordWin(); break;
     case 'quick': html=viewQuick(); break;
@@ -2001,8 +2144,11 @@ const app={
   setDraftPlayer(i,v){ S.draft.players[i]=v; },
   act(type,payload){
     switch(type){
+      case 'GO_JOIN': S.joinMsg=''; S.joinCode=''; S.joinBusy=false; S.view='join'; break;
+      case 'DO_JOIN': joinRoom(S.joinCode); break;
+      case 'SHARE_ROOM': { const gg=S.games.find(x=>x.id===S.currentGameId); if(gg&&gg.roomCode) shareRoom(gg.roomCode); break; }
       case 'GO_HOME': S.undoPending=null; S.view='home'; S.editingHand=null; S.viewingHand=null; break;
-      case 'GO_NEW_GAME': S.draft={name:'',players:['Player 1','Player 2','Player 3','Player 4'],roundWind:'E',dealerIdx:0,limitOn:false,limitVal:10,scoreMode:'POINTS',discardMode:'X2',style:'HK',ruleSet:'new18',startPoints:null}; S.view='newGame'; break;
+      case 'GO_NEW_GAME': S.draft={name:'',players:['Player 1','Player 2','Player 3','Player 4'],roundWind:'E',dealerIdx:0,limitOn:false,limitVal:10,scoreMode:'POINTS',discardMode:'SPLIT',style:'HK',ruleSet:'new18',startPoints:null}; S.view='newGame'; break;
       case 'SET_STYLE': S.draft.style=payload; break;
       case 'SET_RULESET': S.draft.ruleSet=normRuleSet(payload); break;
       case 'SET_START_POINTS': S.draft.startPoints=payload; break;
@@ -2017,7 +2163,7 @@ const app={
       case 'START_GAME': {
         const players=S.draft.players.map((name,i)=>({id:'p'+i+'_'+Date.now(),name:name||('Player '+(i+1))}));
         const g=emptyGame(S.draft.name,players,'E',S.draft.dealerIdx,S.draft.limitOn?Math.max(10,S.draft.limitVal||10):null,S.draft.scoreMode,S.draft.discardMode,{style:S.draft.style,ruleSet:S.draft.ruleSet,startPoints:S.draft.startPoints});
-        S.games.push(g); save(); S.currentGameId=g.id; S.view='game'; break;
+        g.roomCode=genRoomCode(); S.games.push(g); save(); S.currentGameId=g.id; S.view='game'; break;
       }
       case 'OPEN_GAME': S.undoPending=null; S.currentGameId=payload; S.view='game'; S.editingHand=null; S.viewingHand=null; break;
       case 'GO_GAME': S.view='game'; S.editingHand=null; S.viewingHand=null; break;
@@ -2263,7 +2409,7 @@ const app={
     const canvas=document.getElementById('finalCanvas');
     const g=S.games.find(x=>x.id===S.currentGameId); if(!canvas||!g) return;
     drawFinalCard(canvas,{
-      title:g.name||tr('Untitled Game'), standings:computeStandings(g), handsCount:g.hands.length,
+      title:gameTitle(g), standings:computeStandings(g), handsCount:g.hands.length,
       date:new Date().toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}),
       photoDataUrl:S.finalPhotoDataUrl, unit:scoreUnit(g),
       champLine: (()=>{ const st=computeStandings(g); return champText(g,st[0]); })()
@@ -2299,7 +2445,7 @@ const app={
     const settlementLines = (mode==='game' && S.lastSettlement && g) ? g.players.map(p=>({name:p.name,value:S.lastSettlement[p.id]})) : null;
     const data={
       playerName: winner ? winner.name : 'Counted Hand',
-      gameLabel: g ? (g.name||null) : null,
+      gameLabel: g ? gameTitle(g) : null,
       patterns: r.detectedPatterns.concat(r.additionalPoints),
       totalPoints: r.totalPoints,
       payoutLabel: (()=>{ const f=(mode==='game'&&r.cappedPoints!=null)?r.cappedPoints:r.totalPoints, pp=payoutFor(f,g), u=scoreUnit(g); return S.winCtx.winMethod==='SELF_DRAW'?`Self Draw: ${pp.self} ${u} from each player`:S.winCtx.winMethod==='DISCARD_WIN'?`Discard Win: ${pp.discard} ${u} from the discarder${pp.others?` + ${pp.others} from each other player`:''}`:''; })(),
@@ -2356,6 +2502,7 @@ app.act=function(type,a,b){
 /* Block pinch-zoom (iOS Safari ignores user-scalable=no). Double-tap zoom is handled by touch-action:manipulation in CSS, so fast tile taps still register. */
 ['gesturestart','gesturechange','gestureend'].forEach(ev=>document.addEventListener(ev,e=>e.preventDefault()));
 syncLanguageNames();
+initRooms();
 render();
 </script>
 
